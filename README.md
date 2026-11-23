@@ -37,14 +37,20 @@ docker compose up -d --build
 > docker compose --profile web up -d --build
 > ```
 
-### 2. Conectar la App Android (APK) a tu Docker en la misma red Wi-Fi
+### 2. Conectar la App Android (APK) desde **Internet (datos móviles 4G/5G o cualquier Wi-Fi)**
+Si quieres que tu celular guarde los datos en tu Docker desde cualquier lugar por Internet (sin abrir puertos del router):
+```bash
+docker compose --profile internet up -d --build
+docker logs dopa_internet_tunnel 2>&1 | grep trycloudflare.com
+```
+1. Copia la URL pública `https://<algo>.trycloudflare.com` que aparece en la consola.
+2. En tu celular abre **DOPA**, toca **`• dopa`** (arriba a la derecha), pega esa URL HTTPS y presiona **«Probar y guardar servidor»**.
+3. Inicia sesión o crea tu cuenta: toda la información se guardará por HTTPS en tu base de datos PostgreSQL de Docker.
+
+### 3. Conectar la App Android (APK) en la misma red Wi-Fi local
 1. Instala el APK generado (`build/app/outputs/flutter-apk/app-release.apk`) en tu celular Android.
-2. Verifica la IP local de tu PC donde corre Docker:
-   - **Windows:** `ipconfig` (busca *Dirección IPv4*, ej. `192.168.1.25`)
-   - **Linux/macOS:** `hostname -I` o `ifconfig`
-   - Asegúrate de permitir el puerto TCP `8000` en el firewall de tu PC si Windows lo solicita.
-3. Abre **DOPA** en tu celular, toca el botón **`• dopa`** (arriba a la derecha en *Inicio*), ingresa `http://<IP_DE_TU_PC>:8000` y presiona **«Probar y guardar servidor»**.
-4. Inicia sesión con tu cuenta o crea una cuenta nueva; todas tus tareas, micro-pasos, sesiones de enfoque y energía quedarán guardados en PostgreSQL dentro de Docker.
+2. Verifica la IP local de tu PC donde corre Docker (`ipconfig` en Windows o `hostname -I` en Linux/macOS, ej. `192.168.1.25`) y permite el puerto TCP `8000` en el firewall.
+3. Abre **DOPA**, toca **`• dopa`** (arriba a la derecha en *Inicio*), ingresa `http://<IP_DE_TU_PC>:8000` y presiona **«Probar y guardar servidor»**.
 
 ### 3. Compilar el APK manualmente (opcional)
 ```bash

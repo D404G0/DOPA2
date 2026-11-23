@@ -309,7 +309,7 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
               ),
               const SizedBox(height: 4),
               Text(
-                'Usa la IP Wi-Fi de tu computador donde corre Docker (puerto 8000). Ejemplo: http://192.168.1.25:8000',
+                'Ingresa la URL pública HTTPS de tu túnel Docker (para usar con datos/Internet, ej. https://xxx.trycloudflare.com) o tu IP Wi-Fi local (ej. http://192.168.1.25:8000).',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: AppTheme.textSecondary,
                       fontSize: 12,
@@ -321,7 +321,7 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
                 controller: _urlController,
                 keyboardType: TextInputType.url,
                 decoration: InputDecoration(
-                  hintText: 'http://192.168.1.25:8000',
+                  hintText: 'https://tu-tunel.trycloudflare.com',
                   filled: true,
                   fillColor: AppTheme.surfaceWhite,
                   prefixIcon: const Icon(Icons.dns_outlined, color: AppTheme.borderDark),

@@ -114,6 +114,24 @@ services:
     networks:
       - dopa_network
 
+  # ---------------------------------------------------------------------------
+  # 5. Túnel HTTPS Público por Internet (opcional con --profile internet)
+  #    Permite conectar tu APK Android desde datos móviles (4G/5G) o cualquier Wi-Fi
+  #    sin abrir puertos en tu router. Ver URL generada con:
+  #      docker logs dopa_internet_tunnel 2>&1 | grep trycloudflare.com
+  # ---------------------------------------------------------------------------
+  tunnel:
+    profiles: ["internet"]
+    image: cloudflare/cloudflared:latest
+    container_name: dopa_internet_tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - dopa_network
+
 volumes:
   postgres_data:
     driver: local
