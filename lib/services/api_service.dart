@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/wellness_record_model.dart';
 
 /// Excepción tipada para errores de comunicación con el Backend FastAPI.
@@ -64,6 +65,11 @@ class ApiService {
   static final ApiService instance = ApiService._init();
   ApiService._init();
 
+  static const String _prefBaseUrl = 'dopa_api_base_url';
+  static const String _prefAccessToken = 'dopa_access_token';
+  static const String _prefRefreshToken = 'dopa_refresh_token';
+  static const String _prefCurrentUser = 'dopa_current_user';
+
   /// URL inyectada en compilación mediante `--dart-define=API_BASE_URL=http://192.168.X.X:8000/api/v1`
   static const String _envBaseUrl = String.fromEnvironment('API_BASE_URL');
 
@@ -77,11 +83,78 @@ class ApiService {
   String? _refreshToken;
   Map<String, dynamic>? _currentUser;
 
-  /// Timeout corto para garantizar que la app móvil nunca se bloquee si no hay red.
-  Duration requestTimeout = const Duration(seconds: 3);
+  /// Estado reactivo de conectividad con el backend Docker FastAPI.
+  final ValueNotifier<bool> connectionStatusNotifier = ValueNotifier<bool>(false);
+
+  bool get isServerReachable => connectionStatusNotifier.value;
+  String? get customBaseUrl => _customBaseUrl;
+
+  /// Timeout equilibrado para redes Wi-Fi LAN móviles hacia Docker.
+  Duration requestTimeout = const Duration(seconds: 8);
+
+  /// Carga la URL del servidor Docker y tokens guardados al iniciar la app móvil.
+  Future<void> initFromStorage() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedUrl = prefs.getString(_prefBaseUrl);
+      if (savedUrl != null && savedUrl.trim().isNotEmpty) {
+        _customBaseUrl = _normalizeBaseUrl(savedUrl);
+      }
+      final savedAccess = prefs.getString(_prefAccessToken);
+      final savedRefresh = prefs.getString(_prefRefreshToken);
+      final savedUserRaw = prefs.getString(_prefCurrentUser);
+      if (savedAccess != null && savedAccess.isNotEmpty) {
+        _accessToken = savedAccess;
+        _refreshToken = savedRefresh;
+        if (savedUserRaw != null && savedUserRaw.isNotEmpty) {
+          final decoded = jsonDecode(savedUserRaw);
+          if (decoded is Map<String, dynamic>) {
+            _currentUser = decoded;
+          }
+        }
+      }
+    } catch (_) {
+      // En entorno de pruebas sin plugin nativo se continúa con defaults.
+    }
+  }
+
+  Future<void> _persistSession() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_accessToken != null && _accessToken!.isNotEmpty) {
+        await prefs.setString(_prefAccessToken, _accessToken!);
+      } else {
+        await prefs.remove(_prefAccessToken);
+      }
+      if (_refreshToken != null && _refreshToken!.isNotEmpty) {
+        await prefs.setString(_prefRefreshToken, _refreshToken!);
+      } else {
+        await prefs.remove(_prefRefreshToken);
+      }
+      if (_currentUser != null) {
+        await prefs.setString(_prefCurrentUser, jsonEncode(_currentUser));
+      } else {
+        await prefs.remove(_prefCurrentUser);
+      }
+    } catch (_) {}
+  }
+
+  static String _normalizeBaseUrl(String url) {
+    var trimmed = url.trim().replaceAll(RegExp(r'/+$'), '');
+    if (trimmed.isEmpty) return '';
+    if (!trimmed.startsWith('http://') &&
+        !trimmed.startsWith('https://') &&
+        !trimmed.startsWith('/')) {
+      trimmed = 'http://$trimmed';
+    }
+    if (trimmed.endsWith('/api/v1')) {
+      return trimmed;
+    }
+    return '$trimmed/api/v1';
+  }
 
   /// Resuelve dinámicamente la URL base según la plataforma móvil, emulador o web.
-  /// - Dispositivo físico en red LAN: pasar `--dart-define=API_BASE_URL=http://<IP_PC>:8000/api/v1`
+  /// - Dispositivo físico en red LAN: configurar en la app o pasar `--dart-define=API_BASE_URL=http://<IP_PC>:8000/api/v1`
   /// - Emulador Android (AVD): `http://10.0.2.2:8000/api/v1`
   /// - iOS Simulator / Web / Desktop: `http://localhost:8000/api/v1`
   String get baseUrl {
@@ -111,8 +184,36 @@ class ApiService {
 
   /// Permite configurar dinámicamente la IP/URL del servidor desde el dispositivo móvil.
   void setBaseUrl(String url) {
-    final trimmed = url.trim().replaceAll(RegExp(r'/+$'), '');
-    _customBaseUrl = trimmed.endsWith('/api/v1') ? trimmed : '$trimmed/api/v1';
+    final normalized = _normalizeBaseUrl(url);
+    _customBaseUrl = normalized.isEmpty ? null : normalized;
+  }
+
+  /// Guarda la URL del servidor Docker de forma persistente en el dispositivo móvil.
+  Future<void> saveBaseUrl(String url) async {
+    final previous = baseUrl;
+    setBaseUrl(url);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_customBaseUrl != null && _customBaseUrl!.isNotEmpty) {
+        await prefs.setString(_prefBaseUrl, _customBaseUrl!);
+      } else {
+        await prefs.remove(_prefBaseUrl);
+      }
+    } catch (_) {}
+    if (previous != baseUrl) {
+      // Al cambiar de servidor Docker limpiamos tokens antiguos para reautenticar limpio.
+      clearSession();
+    }
+  }
+
+  /// Restaura la URL base por defecto.
+  Future<void> resetBaseUrl() async {
+    _customBaseUrl = null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_prefBaseUrl);
+    } catch (_) {}
+    clearSession();
   }
 
   String? get accessToken => _accessToken;
@@ -133,11 +234,12 @@ class ApiService {
     }
   }
 
-  /// Limpia la sesión activa en memoria.
+  /// Limpia la sesión activa en memoria y en almacenamiento persistente.
   void clearSession() {
     _accessToken = null;
     _refreshToken = null;
     _currentUser = null;
+    _persistSession().catchError((_) {});
   }
 
   http.Client get _client => httpClient ?? http.Client();
@@ -176,19 +278,43 @@ class ApiService {
   }
 
   dynamic _decodeResponse(http.Response response) {
-    if (response.statusCode == 204 || response.bodyBytes.isEmpty) {
-      return <String, dynamic>{};
+    final isSuccess = response.statusCode >= 200 && response.statusCode < 300;
+    if (isSuccess) {
+      connectionStatusNotifier.value = true;
+      if (response.statusCode == 204 || response.bodyBytes.isEmpty) {
+        return <String, dynamic>{};
+      }
     }
+
+    if (response.bodyBytes.isEmpty) {
+      throw DopaApiException(
+        statusCode: response.statusCode,
+        message: 'Error HTTP ${response.statusCode}',
+      );
+    }
+
     String bodyText;
     try {
       bodyText = utf8.decode(response.bodyBytes);
     } catch (_) {
       bodyText = response.body;
     }
-    final decoded = jsonDecode(bodyText);
-    if (response.statusCode >= 200 && response.statusCode < 300) {
+
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(bodyText);
+    } catch (_) {
+      if (isSuccess) return <String, dynamic>{};
+      throw DopaApiException(
+        statusCode: response.statusCode,
+        message: 'Error HTTP ${response.statusCode}: $bodyText',
+      );
+    }
+
+    if (isSuccess) {
       return decoded;
     }
+
     String errorMsg = 'Error HTTP ${response.statusCode}';
     Map<String, dynamic>? details;
     if (decoded is Map<String, dynamic>) {
@@ -212,10 +338,15 @@ class ApiService {
   Future<Map<String, dynamic>> checkHealth() async {
     final root = serverRootUrl.isEmpty ? 'http://localhost:8000' : serverRootUrl;
     final uri = Uri.parse('$root/health');
-    final response = await _client
-        .get(uri, headers: _buildHeaders(requiresAuth: false))
-        .timeout(requestTimeout);
-    return _decodeResponse(response) as Map<String, dynamic>;
+    try {
+      final response = await _client
+          .get(uri, headers: _buildHeaders(requiresAuth: false))
+          .timeout(requestTimeout);
+      return _decodeResponse(response) as Map<String, dynamic>;
+    } catch (e) {
+      connectionStatusNotifier.value = false;
+      rethrow;
+    }
   }
 
   // ===========================================================================
@@ -243,6 +374,7 @@ class ApiService {
     _accessToken = data['access_token'] as String?;
     _refreshToken = data['refresh_token'] as String?;
     _currentUser = data['usuario'] as Map<String, dynamic>?;
+    await _persistSession();
     return data;
   }
 
@@ -265,6 +397,7 @@ class ApiService {
     _accessToken = data['access_token'] as String?;
     _refreshToken = data['refresh_token'] as String?;
     _currentUser = data['usuario'] as Map<String, dynamic>?;
+    await _persistSession();
     return data;
   }
 
@@ -288,20 +421,26 @@ class ApiService {
     _accessToken = data['access_token'] as String?;
     _refreshToken = data['refresh_token'] as String?;
     _currentUser = data['usuario'] as Map<String, dynamic>?;
+    await _persistSession();
     return data;
   }
 
   /// Cierra la sesión activa e invalida el Access Token (`POST /api/v1/auth/logout`).
   Future<Map<String, dynamic>> logout() async {
-    final response = await _client
-        .post(
-          _buildUri('/auth/logout'),
-          headers: _buildHeaders(),
-        )
-        .timeout(requestTimeout);
-    final data = _decodeResponse(response) as Map<String, dynamic>;
-    clearSession();
-    return data;
+    try {
+      final response = await _client
+          .post(
+            _buildUri('/auth/logout'),
+            headers: _buildHeaders(),
+          )
+          .timeout(requestTimeout);
+      final data = _decodeResponse(response) as Map<String, dynamic>;
+      clearSession();
+      return data;
+    } catch (_) {
+      clearSession();
+      return {'mensaje': 'Sesión cerrada localmente.', 'sesion_cerrada': true};
+    }
   }
 
   /// Obtiene el perfil del usuario autenticado (`GET /api/v1/auth/me`).
@@ -312,6 +451,7 @@ class ApiService {
         .timeout(requestTimeout);
     final data = _decodeResponse(response) as Map<String, dynamic>;
     _currentUser = data;
+    await _persistSession();
     return data;
   }
 
@@ -329,6 +469,7 @@ class ApiService {
         .timeout(requestTimeout);
     final data = _decodeResponse(response) as Map<String, dynamic>;
     _currentUser = data;
+    await _persistSession();
     return data;
   }
 
@@ -360,6 +501,7 @@ class ApiService {
       }
       return false;
     } catch (_) {
+      connectionStatusNotifier.value = false;
       return false;
     }
   }
@@ -1104,6 +1246,42 @@ class ApiService {
         'adjusted_pomodoro_minutes': 5,
       };
     }
+  }
+
+  // ===========================================================================
+  // 10. ASISTENTE DE IA EN BACKEND (/api/v1/ai — OpenAI SDK / NVIDIA NIM)
+  // ===========================================================================
+
+  /// Consulta si el servidor Docker tiene configurado el asistente de IA (`GET /api/v1/ai/status`).
+  Future<Map<String, dynamic>> getAIStatus() async {
+    final response = await _client
+        .get(
+          _buildUri('/ai/status'),
+          headers: _buildHeaders(requiresAuth: false),
+        )
+        .timeout(requestTimeout);
+    return _decodeResponse(response) as Map<String, dynamic>;
+  }
+
+  /// Envía un mensaje al asistente de IA en el backend FastAPI (`POST /api/v1/ai/chat`).
+  Future<Map<String, dynamic>> chatWithAI({
+    required String message,
+    List<Map<String, String>> history = const [],
+    String section = 'Inicio',
+  }) async {
+    await ensureAuthenticated();
+    final response = await _client
+        .post(
+          _buildUri('/ai/chat'),
+          headers: _buildHeaders(),
+          body: jsonEncode({
+            'message': message,
+            'history': history,
+            'section': section,
+          }),
+        )
+        .timeout(const Duration(seconds: 120));
+    return _decodeResponse(response) as Map<String, dynamic>;
   }
 
   String? _mapMoodLabel(TipoHumor? humor) {

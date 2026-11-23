@@ -11,9 +11,12 @@ import 'package:dopa_app/models/task_model.dart';
 import 'package:dopa_app/models/focus_session_model.dart';
 import 'package:dopa_app/models/wellness_record_model.dart';
 import 'package:dopa_app/models/reward_model.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   setUp(() {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    SharedPreferences.setMockInitialValues({});
     MainNavigationScreen.tabNotifier.value = 0;
     ApiService.instance.clearSession();
     ApiService.instance.httpClient = null;
@@ -62,12 +65,8 @@ void main() {
       await tester.pumpWidget(const DopaApp());
       await tester.pumpAndSettle();
 
-      await tester.drag(
-        find.byType(SingleChildScrollView).first,
-        const Offset(0, -250),
-      );
+      await tester.ensureVisible(find.text('Poner un vaso de agua cerca'));
       await tester.pumpAndSettle();
-
       await tester.tap(find.text('Poner un vaso de agua cerca'));
       await tester.pumpAndSettle();
 
@@ -75,6 +74,67 @@ void main() {
       expect(find.text('TAREA ACTUAL'), findsOneWidget);
       expect(find.text('Micro-pasos'), findsOneWidget);
       expect(find.text('05:00'), findsOneWidget);
+      // Verifica que ya NO existan micro-pasos hardcodeados ajenos a la tarea
+      expect(find.text('1. Estirar las sábanas'), findsNothing);
+    });
+
+    testWidgets('Permite crear una micro-tarea con micro-pasos y abrir Enfoque Suave',
+        (WidgetTester tester) async {
+      await tester.pumpWidget(const DopaApp());
+      await tester.pumpAndSettle();
+
+      // Ir a la pestaña de Tareas
+      await tester.tap(find.text('¡Hacer algo fácil!'));
+      await tester.pumpAndSettle();
+
+      // Abrir el formulario "+ Nueva"
+      await tester.tap(find.byKey(const Key('add_task_button')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Nueva micro-tarea'), findsOneWidget);
+
+      // Llenar título y un micro-paso personalizado
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Ej. Ordenar el escritorio o estudiar 10 min'),
+        'Estudiar arquitectura',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Ej. Abrir el cuaderno y leer 1 página'),
+        'Leer resumen del capítulo 1',
+      );
+
+      // Desplazar hasta el botón Guardar y tocarlo
+      await tester.ensureVisible(find.text('Crear micro-tarea'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Crear micro-tarea'));
+      await tester.pumpAndSettle();
+
+      // La tarea nueva aparece en la lista y queda seleccionada
+      expect(find.text('Estudiar arquitectura'), findsOneWidget);
+      expect(find.text('Empezar «Estudiar arquitectura»'), findsOneWidget);
+
+      // Iniciar Enfoque Suave con la tarea recién creada
+      await tester.ensureVisible(find.text('Empezar «Estudiar arquitectura»'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Empezar «Estudiar arquitectura»'));
+      await tester.pumpAndSettle();
+
+      // Verificar que Enfoque Suave muestra el título y el micro-paso real del usuario
+      expect(find.text('Estudiar arquitectura'), findsOneWidget);
+      expect(find.text('Leer resumen del capítulo 1'), findsOneWidget);
+    });
+
+    testWidgets('Abre la configuración de conexión Docker y Cuenta desde Inicio',
+        (WidgetTester tester) async {
+      await tester.pumpWidget(const DopaApp());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('server_settings_button')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Conexión Docker y Cuenta'), findsOneWidget);
+      expect(find.text('Probar y guardar servidor'), findsOneWidget);
+      expect(find.text('Crear cuenta'), findsOneWidget);
     });
   });
 
@@ -336,6 +396,20 @@ void main() {
           );
         }
 
+        if (path.endsWith('/api/v1/ai/chat') && method == 'POST') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode({
+              'reply': 'Empieza por "Hacer la cama", es cortita y te dará impulso ✨',
+              'model': 'meta/muse-glimmer-30b',
+              'actions': [
+                {'type': 'iniciarFoco', 'label': '🎯 Iniciar enfoque', 'payload': {}},
+              ],
+            })),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+
         return http.Response(jsonEncode({'detail': 'Not Found'}), 404);
       });
 
@@ -402,6 +476,13 @@ void main() {
       // 8. Verificar metas financieras
       final goals = await ApiService.instance.listFinancialGoals();
       expect(goals['total'], equals(1));
+
+      // 9. Verificar Asistente de IA vía Backend (/api/v1/ai/chat)
+      final aiChatResp = await ApiService.instance.chatWithAI(
+        message: '¿Qué debería hacer primero hoy?',
+      );
+      expect(aiChatResp['reply'], contains('Hacer la cama'));
+      expect(aiChatResp['model'], equals('meta/muse-glimmer-30b'));
     });
   });
 }

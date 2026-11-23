@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.presentation.routers import (
+    ai,
     auth,
     dashboard,
     financial_goals,
@@ -85,3 +86,4 @@ app.include_router(reminders.router)
 app.include_router(gamification.router)
 app.include_router(personal_records.router)
 app.include_router(financial_goals.router)
+app.include_router(ai.router)

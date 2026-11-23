@@ -269,8 +269,32 @@ class DashboardService(IDashboardService):
         )
 
         estado_cache = _USER_ENERGY_TODAY.get(usuario.id, {})
-        energia_hoy = estado_cache.get("energia") or "media"
+        energia_hoy = estado_cache.get("energia")
         humor_hoy = estado_cache.get("humor")
+        if not energia_hoy:
+            registros_recientes, _ = self.registro_repo.list_by_user(
+                id_usuario=usuario.id,
+                limit=15,
+                offset=0,
+            )
+            for reg in registros_recientes:
+                nombre_reg = (reg.nombre or "").strip()
+                if nombre_reg.lower().startswith("energía diaria:"):
+                    parte = nombre_reg.split(":", 1)[1].strip()
+                    if "| humor:" in parte.lower():
+                        idx = parte.lower().index("| humor:")
+                        energia_raw = parte[:idx].strip().lower()
+                        humor_hoy = humor_hoy or parte[idx + 8:].strip()
+                    else:
+                        energia_raw = parte.lower()
+                    if energia_raw in {"poquita", "baja"}:
+                        energia_hoy = "poquita"
+                    elif energia_raw in {"a tope", "alta"}:
+                        energia_hoy = "a tope"
+                    else:
+                        energia_hoy = "media"
+                    break
+        energia_hoy = energia_hoy or "media"
         prefs = get_user_preferences(usuario.id)
 
         return DashboardMapper.to_dto(

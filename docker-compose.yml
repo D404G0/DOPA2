@@ -1,11 +1,19 @@
 # =============================================================================
-# DOCKER COMPOSE UNIFICADO — PROYECTO DOPA (DB + Backend FastAPI + Frontend)
-# Agente Responsable: Agent_DevOps (Orquestación de Contenedores)
+# DOCKER COMPOSE UNIFICADO — PROYECTO DOPA (DB + Backend FastAPI + pgAdmin + Web)
+#
+# Uso rápido para conectar el APK Android desde tu celular (misma red Wi-Fi):
+#   docker compose up -d --build
+#   -> Levanta PostgreSQL 16 (puerto 5432), API FastAPI (puerto 8000) y pgAdmin (5050).
+#   -> En el celular abre DOPA, toca "• dopa" arriba a la derecha e ingresa:
+#      http://<IP_LOCAL_DE_TU_PC>:8000
+#
+# Si también deseas levantar la versión Web/PWA en http://localhost:8080:
+#   docker compose --profile web up -d --build
 # =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
-  # 1. Base de Datos Relacional: PostgreSQL 16 (con init.sql y seeders)
+  # 1. Base de Datos Relacional: PostgreSQL 16 (persistente con volumen Docker)
   # ---------------------------------------------------------------------------
   db:
     image: postgres:16-alpine
@@ -16,7 +24,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dopa_pass}
       POSTGRES_DB: ${POSTGRES_DB:-dopa_db}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "0.0.0.0:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -29,7 +37,7 @@ services:
       - dopa_network
 
   # ---------------------------------------------------------------------------
-  # 2. Administrador Visual de Base de Datos: pgAdmin 4
+  # 2. Administrador Visual de Base de Datos: pgAdmin 4 (http://localhost:5050)
   # ---------------------------------------------------------------------------
   pgadmin:
     image: dpage/pgadmin4:latest
@@ -39,7 +47,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@dopa.app}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin123}
     ports:
-      - "${PGADMIN_PORT:-5050}:80"
+      - "0.0.0.0:${PGADMIN_PORT:-5050}:80"
     depends_on:
       db:
         condition: service_healthy
@@ -48,6 +56,8 @@ services:
 
   # ---------------------------------------------------------------------------
   # 3. Backend RESTful en 5 Capas: Python 3.12 + FastAPI + SQLAlchemy
+  #    Accesible desde tu celular en: http://<IP_DE_TU_PC>:8000/api/v1
+  #    Documentación Swagger en:      http://<IP_DE_TU_PC>:8000/docs
   # ---------------------------------------------------------------------------
   backend:
     build:
@@ -61,32 +71,46 @@ services:
       DOPA_JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dopa-super-secret-jwt-key-tdah-2026}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dopa-super-secret-jwt-key-tdah-2026}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
-      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+      AI_API_BASE_URL: ${AI_API_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-meta/muse-glimmer-30b}
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "0.0.0.0:${BACKEND_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - dopa_network
 
   # ---------------------------------------------------------------------------
-  # 4. Frontend Flutter Web + Nginx Reverse Proxy hacia FastAPI
+  # 4. Frontend Flutter Web + Nginx Reverse Proxy (opcional con --profile web)
   # ---------------------------------------------------------------------------
   frontend:
+    profiles: ["web"]
     build:
       context: .
       dockerfile: Dockerfile
       target: frontend
       args:
         API_BASE_URL: ${API_BASE_URL:-/api/v1}
+        AI_API_BASE_URL: ${AI_API_BASE_URL:-https://integrate.api.nvidia.com/v1}
+        AI_API_KEY: ${AI_API_KEY:-}
+        AI_MODEL: ${AI_MODEL:-meta/muse-glimmer-30b}
     container_name: dopa_flutter_frontend
     restart: unless-stopped
     ports:
-      - "${DOPA_PORT:-8080}:80"
+      - "0.0.0.0:${DOPA_PORT:-8080}:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - dopa_network
 

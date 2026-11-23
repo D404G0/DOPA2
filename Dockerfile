@@ -45,6 +45,9 @@ FROM ghcr.io/cirruslabs/flutter:stable AS frontend-build
 WORKDIR /app
 
 ARG API_BASE_URL=/api/v1
+ARG AI_API_BASE_URL=https://integrate.api.nvidia.com/v1
+ARG AI_API_KEY=
+ARG AI_MODEL=meta/muse-glimmer-30b
 
 # Copiar definición de dependencias primero para aprovechar caché de capas Docker
 COPY pubspec.* ./
@@ -55,9 +58,13 @@ COPY analysis_options.yaml ./
 COPY lib ./lib
 COPY web ./web
 
-# Asegurar soporte web y compilar bundle optimizado de producción inyectando API_BASE_URL
+# Asegurar soporte web y compilar bundle optimizado de producción inyectando variables
 RUN ([ -d web ] || flutter create . --platforms=web) && \
-    flutter build web --release --dart-define=API_BASE_URL=${API_BASE_URL}
+    flutter build web --release \
+      --dart-define=API_BASE_URL=${API_BASE_URL} \
+      --dart-define=AI_API_BASE_URL=${AI_API_BASE_URL} \
+      --dart-define=AI_API_KEY=${AI_API_KEY} \
+      --dart-define=AI_MODEL=${AI_MODEL}
 
 
 # -----------------------------------------------------------------------------

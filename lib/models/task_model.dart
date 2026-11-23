@@ -51,6 +51,8 @@ class TareaBloque {
   final int? id;
   final String titulo;
   final String subtitulo;
+  final String? descripcion;
+  final String? fechaVencimiento;
   final int duracionMinutos;
   final EstadoTarea estado;
   final int puntosDopamina;
@@ -62,6 +64,8 @@ class TareaBloque {
     this.id,
     required this.titulo,
     required this.subtitulo,
+    this.descripcion,
+    this.fechaVencimiento,
     required this.duracionMinutos,
     this.estado = EstadoTarea.despues,
     this.puntosDopamina = 5,
@@ -70,11 +74,41 @@ class TareaBloque {
     this.prioridad = 'Media',
   });
 
+  TareaBloque copyWith({
+    int? id,
+    String? titulo,
+    String? subtitulo,
+    String? descripcion,
+    String? fechaVencimiento,
+    int? duracionMinutos,
+    EstadoTarea? estado,
+    int? puntosDopamina,
+    double? estresNivel,
+    List<MicroPaso>? microPasos,
+    String? prioridad,
+  }) {
+    return TareaBloque(
+      id: id ?? this.id,
+      titulo: titulo ?? this.titulo,
+      subtitulo: subtitulo ?? this.subtitulo,
+      descripcion: descripcion ?? this.descripcion,
+      fechaVencimiento: fechaVencimiento ?? this.fechaVencimiento,
+      duracionMinutos: duracionMinutos ?? this.duracionMinutos,
+      estado: estado ?? this.estado,
+      puntosDopamina: puntosDopamina ?? this.puntosDopamina,
+      estresNivel: estresNivel ?? this.estresNivel,
+      microPasos: microPasos ?? this.microPasos,
+      prioridad: prioridad ?? this.prioridad,
+    );
+  }
+
   Map<String, dynamic> toMap() {
     return {
       'id': id,
       'titulo': titulo,
       'subtitulo': subtitulo,
+      'descripcion': descripcion,
+      'fechavencimiento': fechaVencimiento,
       'duracion_minutos': duracionMinutos,
       'estado': estado.name,
       'puntos_dopamina': puntosDopamina,
@@ -91,6 +125,8 @@ class TareaBloque {
       id: map['id'] as int?,
       titulo: map['titulo'] as String,
       subtitulo: map['subtitulo'] as String? ?? '',
+      descripcion: map['descripcion'] as String?,
+      fechaVencimiento: map['fechavencimiento'] as String?,
       duracionMinutos: map['duracion_minutos'] as int? ?? 5,
       estado: EstadoTarea.values.firstWhere(
         (e) => e.name == map['estado'],
@@ -112,6 +148,8 @@ class TareaBloque {
     final String prioridad = json['prioridad'] as String? ?? 'Media';
     final String etiqueta = json['etiqueta_esfuerzo'] as String? ?? 'Suave';
     final int puntos = json['puntos_recompensa'] as int? ?? 10;
+    final String? descripcion = json['descripcion'] as String?;
+    final String? fechaVencimiento = json['fechavencimiento'] as String?;
 
     final rawSubtareas = json['subtareas'] as List<dynamic>? ?? const [];
     final pasos = rawSubtareas
@@ -124,16 +162,16 @@ class TareaBloque {
     switch (prioridad) {
       case 'Baja':
         duracion = 3;
-        estres = 0.1;
+        estres = 0.15;
         break;
       case 'Alta':
         duracion = 8;
-        estres = 0.3;
+        estres = 0.45;
         break;
       case 'Media':
       default:
         duracion = 5;
-        estres = 0.2;
+        estres = 0.28;
         break;
     }
 
@@ -141,16 +179,19 @@ class TareaBloque {
         ? EstadoTarea.hecho
         : (isFirstPending ? EstadoTarea.ahora : EstadoTarea.despues);
 
+    final int completados = pasos.where((p) => p.completado).length;
     final String subtitulo = completada
         ? '¡Hecho! · +$puntos dopamina'
         : (pasos.isNotEmpty
-            ? '$etiqueta · ${pasos.length} micro-pasos · $duracion min'
+            ? '$etiqueta · $completados/${pasos.length} pasos · $duracion min'
             : '$etiqueta · $duracion min');
 
     return TareaBloque(
       id: json['id'] as int?,
       titulo: json['titulo'] as String? ?? 'Micro-tarea',
       subtitulo: subtitulo,
+      descripcion: descripcion,
+      fechaVencimiento: fechaVencimiento,
       duracionMinutos: duracion,
       estado: estado,
       puntosDopamina: puntos,

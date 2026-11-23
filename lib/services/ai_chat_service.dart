@@ -4,46 +4,35 @@ import 'package:http/http.dart' as http;
 import '../models/ai_chat_model.dart';
 import '../models/task_model.dart';
 import 'ai_context_service.dart';
+import 'api_service.dart';
 import 'db_service.dart';
 
-/// Servicio de comunicación con el modelo de IA (compatible con API OpenAI).
+/// Servicio de comunicación con el Asistente de IA de DOPA.
 ///
-/// Arquitectura modular: Interfaz → AIChatService → AIContextService → Modelo de IA
-///
-/// La API Key y el endpoint se inyectan mediante `--dart-define` en compilación
-/// o se configuran dinámicamente. Nunca se hardcodean en el código fuente.
-///
-/// Para cambiar de proveedor/modelo de IA, solo hay que modificar este servicio.
+/// Arquitectura modular:
+/// - **Modo principal (recomendado / seguro):** Flutter → Backend FastAPI (`/api/v1/ai/chat`)
+///   → Python `from openai import OpenAI` (NVIDIA NIM / OpenAI) con contexto real de PostgreSQL.
+/// - **Modo directo opcional:** si se inyecta `AI_API_KEY` vía `--dart-define` o `configure()`,
+///   puede comunicarse directamente con la API OpenAI-compatible si el backend no está disponible.
 class AIChatService {
   static final AIChatService instance = AIChatService._();
   AIChatService._();
 
-  // ---------------------------------------------------------------------------
-  // Configuración del proveedor de IA (inyectada por --dart-define)
-  // ---------------------------------------------------------------------------
-
-  /// URL base de la API de IA. Inyectada en compilación:
-  /// `--dart-define=AI_API_BASE_URL=https://integrate.api.nvidia.com/v1`
   static const String _envBaseUrl = String.fromEnvironment(
     'AI_API_BASE_URL',
     defaultValue: 'https://integrate.api.nvidia.com/v1',
   );
 
-  /// API Key del proveedor de IA. Inyectada en compilación:
-  /// `--dart-define=AI_API_KEY=nvapi-...`
   static const String _envApiKey = String.fromEnvironment(
     'AI_API_KEY',
     defaultValue: '',
   );
 
-  /// Modelo de IA a utilizar. Inyectado en compilación:
-  /// `--dart-define=AI_MODEL=meta/muse-glimmer-30b`
   static const String _envModel = String.fromEnvironment(
     'AI_MODEL',
     defaultValue: 'meta/muse-glimmer-30b',
   );
 
-  /// Permite configurar dinámicamente en runtime (ej: desde settings).
   String? _customBaseUrl;
   String? _customApiKey;
   String? _customModel;
@@ -52,7 +41,7 @@ class AIChatService {
   String get _apiKey => _customApiKey ?? _envApiKey;
   String get _model => _customModel ?? _envModel;
 
-  /// Configura dinámicamente el proveedor de IA en runtime.
+  /// Configura dinámicamente un proveedor directo de IA en runtime (opcional).
   void configure({
     String? baseUrl,
     String? apiKey,
@@ -63,15 +52,12 @@ class AIChatService {
     _customModel = model;
   }
 
-  /// Verifica si el servicio de IA está configurado con API Key.
-  bool get isConfigured => _apiKey.isNotEmpty;
+  /// Verdadero si hay API Key directa o el cliente está conectado al backend Docker.
+  bool get isConfigured =>
+      _apiKey.isNotEmpty || ApiService.instance.isServerReachable;
 
-  /// Timeout para solicitudes al modelo de IA.
-  Duration requestTimeout = const Duration(seconds: 30);
+  Duration requestTimeout = const Duration(seconds: 60);
 
-  // ---------------------------------------------------------------------------
-  // Historial de conversación en memoria
-  // ---------------------------------------------------------------------------
   final List<ChatMessage> _conversationHistory = [];
 
   List<ChatMessage> get conversationHistory =>
@@ -81,93 +67,88 @@ class AIChatService {
     _conversationHistory.clear();
   }
 
-  // ---------------------------------------------------------------------------
-  // Prompt del sistema (personalidad del asistente DOPA)
-  // ---------------------------------------------------------------------------
-
   static const String _systemPromptBase = '''
-Eres el asistente de productividad integrado en DOPA, una aplicación móvil diseñada para personas que buscan gestionar sus tareas de forma empática y sin presión.
-
-Tu personalidad:
-- Eres amigable, empático y motivador, nunca juzgas ni presionas.
-- Usas un tono cálido y conversacional, como un amigo que te ayuda a organizarte.
-- Prefieres sugerencias suaves y de baja fricción: "poquito a poquito".
-- Cuando recomiendas tareas, explicas brevemente por qué (ej: "es rápida y te dará un impulso de dopamina").
-- Nunca usas lenguaje técnico ni abrumador.
-- Respondes en español.
-- Mantén tus respuestas concisas y útiles (máximo 3-4 párrafos cortos).
-
-Tu rol:
-- Ayudar al usuario a decidir qué tarea hacer primero.
-- Organizar y priorizar tareas según urgencia, dificultad y energía del usuario.
-- Sugerir un plan para el día.
-- Recomendar cuándo tomar un break.
-- Analizar las tareas pendientes y completadas para dar feedback.
-- Proponer nuevas micro-tareas cuando tenga sentido.
-- Usar SIEMPRE la información real del usuario (tareas, energía, dopamina) en tus respuestas.
-- Nunca inventar tareas que el usuario no tiene; puedes sugerir nuevas pero aclarando que son sugerencias.
-
-Formato de respuesta:
-- Usa emojis con moderación para hacer la conversación más amigable.
-- Cuando recomiendes tareas específicas del usuario, menciónalas entre comillas.
-- Si sugieres acciones, indícalas claramente para que el usuario pueda ejecutarlas.
-- Para listas, usa viñetas simples.
+Eres el asistente de productividad integrado en DOPA, una aplicación móvil diseñada para personas con TDAH que buscan gestionar sus tareas de forma empática y sin presión.
+Responde en español, con tono cálido y conciso (máximo 3-4 párrafos cortos), usando siempre la información real del usuario.
 ''';
 
-  // ---------------------------------------------------------------------------
-  // Enviar mensaje y obtener respuesta de la IA
-  // ---------------------------------------------------------------------------
-
-  /// Envía un mensaje del usuario al modelo de IA y retorna la respuesta.
-  ///
-  /// Recopila automáticamente el contexto actual de la aplicación
-  /// para enriquecer la consulta.
+  /// Envía un mensaje del usuario al asistente de IA (vía Backend Docker `/api/v1/ai/chat`).
   Future<ChatMessage> sendMessage(String userMessage) async {
-    // 1. Agregar mensaje del usuario al historial
+    final trimmed = userMessage.trim();
+    // Capturar historial previo antes de agregar el mensaje actual
+    final previousHistory = _getRecentMessages(maxMessages: 10);
+
     final userMsg = ChatMessage(
       role: ChatRole.user,
-      content: userMessage,
+      content: trimmed,
     );
     _conversationHistory.add(userMsg);
 
-    // 2. Verificar que tenemos API Key
-    if (!isConfigured) {
-      final errorMsg = ChatMessage.error(
-        'El asistente de IA no está configurado. '
-        'Configura la API Key para activar esta funcionalidad.',
+    // 1. Ruta principal: Backend Docker FastAPI (`/api/v1/ai/chat` usando `from openai import OpenAI`)
+    try {
+      final backendResult = await ApiService.instance.chatWithAI(
+        message: trimmed,
+        history: previousHistory,
+        section: AIContextService.instance.currentSection,
       );
-      _conversationHistory.add(errorMsg);
-      return errorMsg;
+
+      final reply = (backendResult['reply'] as String?)?.trim() ??
+          'No pude generar una respuesta.';
+      final rawActions = backendResult['actions'] as List<dynamic>? ?? const [];
+      final parsedActions = _parseBackendActions(rawActions);
+      final actions =
+          parsedActions.isNotEmpty ? parsedActions : _extractActions(reply);
+
+      final assistantMsg = ChatMessage(
+        role: ChatRole.assistant,
+        content: reply,
+        actions: actions,
+      );
+      _conversationHistory.add(assistantMsg);
+      return assistantMsg;
+    } on DopaApiException catch (e) {
+      // Si el servidor respondió con un error explícito (ej. 503 sin AI_API_KEY), mostrar detalle claro
+      if (_apiKey.isEmpty) {
+        final errorMsg = ChatMessage.error(
+          e.statusCode == 503
+              ? 'El servidor Docker aún no tiene configurada la variable AI_API_KEY en el archivo .env.'
+              : 'El asistente devolvió un error (${e.statusCode}): ${e.message}',
+        );
+        _conversationHistory.add(errorMsg);
+        return errorMsg;
+      }
+    } catch (e) {
+      debugPrint('Backend AI chat error, checking direct fallback: $e');
+      if (_apiKey.isEmpty) {
+        final errorMsg = ChatMessage.error(
+          'No pude conectarme con tu servidor Docker (${ApiService.instance.serverRootUrl}). '
+          'Verifica la conexión en el botón "• dopa" arriba a la derecha. 🌿',
+        );
+        _conversationHistory.add(errorMsg);
+        return errorMsg;
+      }
     }
 
+    // 2. Fallback directo opcional si se configuró una API Key local
     try {
-      // 3. Obtener contexto actual de la app
       final contextPrompt = await AIContextService.instance.buildContextPrompt();
-
-      // 4. Construir mensajes para la API
       final apiMessages = <Map<String, String>>[
         {
           'role': 'system',
           'content': '$_systemPromptBase\n\n$contextPrompt',
         },
-        // Incluir últimos mensajes del historial (máx 10 para no exceder tokens)
-        ..._getRecentMessages(maxMessages: 10),
+        ...previousHistory,
+        {'role': 'user', 'content': trimmed},
       ];
 
-      // 5. Llamar a la API del modelo de IA
-      final responseContent = await _callAIAPI(apiMessages);
-
-      // 6. Analizar si la respuesta sugiere acciones
+      final responseContent = await _callDirectAIAPI(apiMessages);
       final actions = _extractActions(responseContent);
-
-      // 7. Crear y guardar mensaje de respuesta
       final assistantMsg = ChatMessage(
         role: ChatRole.assistant,
         content: responseContent,
         actions: actions,
       );
       _conversationHistory.add(assistantMsg);
-
       return assistantMsg;
     } catch (e) {
       final errorMsg = ChatMessage.error(
@@ -179,17 +160,35 @@ Formato de respuesta:
     }
   }
 
-  /// Obtiene los mensajes recientes para incluir en la API (sin system).
   List<Map<String, String>> _getRecentMessages({int maxMessages = 10}) {
     final recent = _conversationHistory
-        .where((m) => !m.isLoading && !m.isError)
+        .where((m) =>
+            !m.isLoading &&
+            !m.isError &&
+            (m.role == ChatRole.user || m.role == ChatRole.assistant))
         .toList();
     final start = recent.length > maxMessages ? recent.length - maxMessages : 0;
     return recent.sublist(start).map((m) => m.toApiMessage()).toList();
   }
 
-  /// Llama a la API compatible con OpenAI Chat Completions.
-  Future<String> _callAIAPI(List<Map<String, String>> messages) async {
+  List<AIAction> _parseBackendActions(List<dynamic> rawActions) {
+    final actions = <AIAction>[];
+    for (final item in rawActions) {
+      if (item is! Map<String, dynamic>) continue;
+      final typeName = item['type'] as String? ?? '';
+      final label = item['label'] as String? ?? '';
+      final payload =
+          (item['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+      final type = AIActionType.values.where((e) => e.name == typeName).firstOrNull;
+      if (type != null && label.isNotEmpty) {
+        actions.add(AIAction(type: type, label: label, payload: payload));
+      }
+    }
+    return actions;
+  }
+
+  /// Llamada directa compatible con OpenAI Chat Completions (solo si se configuró API key local).
+  Future<String> _callDirectAIAPI(List<Map<String, String>> messages) async {
     final url = Uri.parse('$_baseUrl/chat/completions');
     final headers = {
       'Content-Type': 'application/json',
@@ -198,9 +197,9 @@ Formato de respuesta:
     final body = jsonEncode({
       'model': _model,
       'messages': messages,
-      'temperature': 0.7,
-      'top_p': 0.9,
-      'max_tokens': 1024,
+      'temperature': 1,
+      'top_p': 0.95,
+      'max_tokens': 8192,
       'stream': false,
     });
 
@@ -224,28 +223,20 @@ Formato de respuesta:
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Extracción de acciones sugeridas desde la respuesta
-  // ---------------------------------------------------------------------------
-
-  /// Analiza la respuesta de la IA para detectar acciones que el usuario
-  /// podría ejecutar directamente desde el chat.
   List<AIAction> _extractActions(String response) {
     final actions = <AIAction>[];
     final lower = response.toLowerCase();
 
-    // Detectar si la IA sugiere crear/agregar una nueva tarea
     if (lower.contains('podrías agregar') ||
         lower.contains('te sugiero crear') ||
         lower.contains('nueva tarea') ||
         lower.contains('podrías crear')) {
       actions.add(const AIAction(
         type: AIActionType.agregarTarea,
-        label: '➕ Agregar nueva tarea',
+        label: '➕ Crear micro-tarea',
       ));
     }
 
-    // Detectar si sugiere organizar/priorizar tareas
     if (lower.contains('organizar') ||
         lower.contains('priorizar') ||
         lower.contains('reordenar') ||
@@ -256,7 +247,6 @@ Formato de respuesta:
       ));
     }
 
-    // Detectar si sugiere tomar un break
     if (lower.contains('break') ||
         lower.contains('descanso') ||
         lower.contains('pausa') ||
@@ -267,7 +257,6 @@ Formato de respuesta:
       ));
     }
 
-    // Detectar si sugiere iniciar foco/concentración
     if (lower.contains('empezar') ||
         lower.contains('iniciar') ||
         lower.contains('enfocarte') ||
@@ -281,12 +270,7 @@ Formato de respuesta:
     return actions;
   }
 
-  // ---------------------------------------------------------------------------
-  // Ejecución de acciones sugeridas por la IA
-  // ---------------------------------------------------------------------------
-
   /// Ejecuta una acción sugerida por la IA.
-  /// Retorna un mensaje describiendo el resultado.
   Future<String?> executeAction(AIAction action) async {
     switch (action.type) {
       case AIActionType.agregarTarea:
@@ -305,15 +289,9 @@ Formato de respuesta:
           final tareas = await DBService.instance.obtenerTareas();
           final tarea = tareas.where((t) => t.id == taskId).firstOrNull;
           if (tarea != null) {
-            final actualizada = TareaBloque(
-              id: tarea.id,
-              titulo: tarea.titulo,
+            final actualizada = tarea.copyWith(
               subtitulo: '¡Hecho! · +${tarea.puntosDopamina} dopamina',
-              duracionMinutos: tarea.duracionMinutos,
               estado: EstadoTarea.hecho,
-              puntosDopamina: tarea.puntosDopamina,
-              microPasos: tarea.microPasos,
-              prioridad: tarea.prioridad,
             );
             await DBService.instance.actualizarTarea(actualizada);
             return 'Tarea "${tarea.titulo}" completada 🎉';
@@ -325,16 +303,10 @@ Formato de respuesta:
       case AIActionType.organizarTareas:
       case AIActionType.iniciarFoco:
       case AIActionType.tomarBreak:
-        // Estas acciones se manejan como navegación desde el widget de UI
         return null;
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Mensajes rápidos sugeridos (chips de ejemplo)
-  // ---------------------------------------------------------------------------
-
-  /// Sugerencias contextuales para ayudar al usuario a empezar la conversación.
   Future<List<String>> getSuggestedPrompts() async {
     final tareas = await DBService.instance.obtenerTareas();
     final pendientes = tareas.where((t) => t.estado != EstadoTarea.hecho).length;

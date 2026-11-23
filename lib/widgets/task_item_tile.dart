@@ -13,6 +13,8 @@ class TaskItemTile extends StatelessWidget {
   final bool isSelected;
   final ValueChanged<bool?>? onToggle;
   final VoidCallback? onTap;
+  final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
 
   const TaskItemTile({
     super.key,
@@ -20,6 +22,8 @@ class TaskItemTile extends StatelessWidget {
     this.isSelected = false,
     this.onToggle,
     this.onTap,
+    this.onEdit,
+    this.onDelete,
   });
 
   @override
@@ -96,7 +100,7 @@ class TaskItemTile extends StatelessWidget {
                 Text(
                   tarea.subtitulo,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: isDone ? AppTheme.textSecondary : AppTheme.textSecondary,
+                        color: AppTheme.textSecondary,
                         fontWeight: FontWeight.w600,
                       ),
                 ),
@@ -106,8 +110,8 @@ class TaskItemTile extends StatelessWidget {
 
           // Indicador circular de estado
           Container(
-            width: 14,
-            height: 14,
+            width: 12,
+            height: 12,
             decoration: BoxDecoration(
               color: statusDotColor,
               shape: BoxShape.circle,
@@ -118,8 +122,58 @@ class TaskItemTile extends StatelessWidget {
             ),
           ),
 
-          // Chevron si la tarea tiene micro-pasos o es la activa
-          if (isSelected) ...[
+          // Menú discreto de editar / eliminar
+          if (onEdit != null || onDelete != null) ...[
+            const SizedBox(width: 4),
+            PopupMenuButton<String>(
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 130),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: const BorderSide(color: AppTheme.borderDark, width: 1.4),
+              ),
+              color: AppTheme.surfaceWhite,
+              icon: const Icon(
+                Icons.more_vert_rounded,
+                color: AppTheme.borderDark,
+                size: 20,
+              ),
+              onSelected: (action) {
+                if (action == 'edit') onEdit?.call();
+                if (action == 'delete') onDelete?.call();
+              },
+              itemBuilder: (context) => [
+                if (onEdit != null)
+                  const PopupMenuItem<String>(
+                    value: 'edit',
+                    child: Row(
+                      children: [
+                        Icon(Icons.edit_outlined, size: 18, color: AppTheme.borderDark),
+                        SizedBox(width: 8),
+                        Text('Editar', style: TextStyle(fontWeight: FontWeight.w700)),
+                      ],
+                    ),
+                  ),
+                if (onDelete != null)
+                  const PopupMenuItem<String>(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_outline_rounded, size: 18, color: Color(0xFFC94A4A)),
+                        SizedBox(width: 8),
+                        Text(
+                          'Eliminar',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFFC94A4A),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ] else if (isSelected) ...[
             const SizedBox(width: 8),
             const Icon(
               Icons.chevron_right_rounded,

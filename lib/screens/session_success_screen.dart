@@ -9,7 +9,9 @@ import 'main_navigation_screen.dart';
 /// No exige continuar trabajando; valida el esfuerzo realizado ("Esto ya cuenta")
 /// y permite descansar o revisar el avance acumulado.
 class SessionSuccessScreen extends StatelessWidget {
+  final String userName;
   final String taskTitle;
+  final int? stepsCount;
   final int dopamineGained;
   final int totalDopamineToday;
   final VoidCallback? onGoToDopamine;
@@ -17,7 +19,9 @@ class SessionSuccessScreen extends StatelessWidget {
 
   const SessionSuccessScreen({
     super.key,
+    this.userName = 'Fred',
     this.taskTitle = 'Hacer la cama',
+    this.stepsCount,
     this.dopamineGained = 10,
     this.totalDopamineToday = 32,
     this.onGoToDopamine,
@@ -118,11 +122,14 @@ class SessionSuccessScreen extends StatelessWidget {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Text(
-                            '¡Lo hiciste, Fred!',
-                            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                                  fontWeight: FontWeight.w900,
-                                ),
+                          Flexible(
+                            child: Text(
+                              '¡Lo hiciste, $userName!',
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                            ),
                           ),
                           const SizedBox(width: 6),
                           const Text('✨', style: TextStyle(fontSize: 22)),
@@ -177,7 +184,9 @@ class SessionSuccessScreen extends StatelessWidget {
                                       ),
                                       const SizedBox(height: 2),
                                       Text(
-                                        '$taskTitle · 2 pasos',
+                                        (stepsCount != null && stepsCount! > 0)
+                                            ? '$taskTitle · $stepsCount pasos'
+                                            : taskTitle,
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodyMedium

@@ -7,7 +7,7 @@ Optimiza los payloads JSON hacia la aplicación móvil y valida las entradas seg
 
 from datetime import date, datetime, time
 import re
-from typing import Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -731,3 +731,56 @@ class DashboardResponseDTO(BaseModel):
     rutinas_hoy: list[RoutineResponseDTO]
     recordatorios_proximos: list[ReminderResponseDTO]
     accion_rapida_etiqueta: str = "¡Hacer algo fácil!"
+
+
+# =====================================================================
+# 10. ASISTENTE DE IA (/api/v1/ai) — OpenAI SDK / NVIDIA NIM
+# =====================================================================
+
+
+class AIChatMessageDTO(BaseModel):
+    """Mensaje del historial de conversación con el asistente de IA."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=8000)
+
+
+class AIChatRequestDTO(BaseModel):
+    """Solicitud de chat del cliente móvil hacia el asistente de IA en backend."""
+
+    message: str = Field(..., min_length=1, max_length=4000)
+    history: list[AIChatMessageDTO] = Field(default_factory=list)
+    section: Optional[str] = Field(default="Inicio", max_length=80)
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        limpio = value.strip()
+        if not limpio:
+            raise ValueError("El mensaje para el asistente no puede estar vacío.")
+        return limpio
+
+
+class AIActionDTO(BaseModel):
+    """Acción rápida sugerida por el asistente para ejecutar en la app móvil."""
+
+    type: str
+    label: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AIChatResponseDTO(BaseModel):
+    """Respuesta estructurada del asistente de IA de DOPA."""
+
+    reply: str
+    model: str
+    actions: list[AIActionDTO] = Field(default_factory=list)
+
+
+class AIStatusResponseDTO(BaseModel):
+    """Estado operativo del proveedor de IA configurado en el backend."""
+
+    configured: bool
+    base_url: str
+    model: str
+

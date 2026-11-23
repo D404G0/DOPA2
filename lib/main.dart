@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'theme/app_theme.dart';
 import 'screens/main_navigation_screen.dart';
+import 'services/api_service.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Restaurar URL del servidor Docker y sesión JWT guardados en el dispositivo
+  await ApiService.instance.initFromStorage();
 
   // Configuración de barra de estado translúcida acorde al estilo pastel
   SystemChrome.setSystemUIOverlayStyle(

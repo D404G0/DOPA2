@@ -5,6 +5,7 @@ import '../services/ai_chat_service.dart';
 import '../services/ai_context_service.dart';
 import '../widgets/ai_chat_bubble.dart';
 import '../widgets/dopa_card.dart';
+import '../widgets/task_editor_sheet.dart';
 import '../screens/main_navigation_screen.dart';
 
 /// Panel del asistente de IA que se muestra como bottom sheet.
@@ -79,7 +80,7 @@ class _AIAssistantPanelState extends State<AIAssistantPanel> {
 
     _scrollToBottom();
 
-    final response = await AIChatService.instance.sendMessage(text.trim());
+    await AIChatService.instance.sendMessage(text.trim());
 
     if (mounted) {
       setState(() {
@@ -117,6 +118,13 @@ class _AIAssistantPanelState extends State<AIAssistantPanel> {
         MainNavigationScreen.tabNotifier.value = 1; // Tab Tareas
         break;
       case AIActionType.agregarTarea:
+        final titulo = action.payload['titulo'] as String?;
+        if (titulo == null || titulo.trim().isEmpty) {
+          TaskEditorSheet.show(context);
+        } else {
+          _executeAction(action);
+        }
+        break;
       case AIActionType.completarTarea:
       case AIActionType.marcarPrioridad:
         _executeAction(action);

@@ -4,7 +4,7 @@ import 'ai_assistant_panel.dart';
 
 /// Botón flotante (FAB) para abrir el asistente de IA de DOPA.
 ///
-/// Se muestra como una burbuja animada en la esquina inferior derecha,
+/// Se muestra como una burbuja tranquila en la esquina inferior derecha,
 /// justo arriba de la barra de navegación, disponible en todas las secciones.
 ///
 /// Estilo: Soft Neo-Brutalism con color pastelYellow (el color de la IA en DOPA).
@@ -15,45 +15,24 @@ class AIFloatingButton extends StatefulWidget {
   State<AIFloatingButton> createState() => _AIFloatingButtonState();
 }
 
-class _AIFloatingButtonState extends State<AIFloatingButton>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulseController;
-  late final Animation<double> _pulseAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2000),
-    )..repeat(reverse: true);
-
-    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.08).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
+class _AIFloatingButtonState extends State<AIFloatingButton> {
+  bool _isPressed = false;
 
   @override
   Widget build(BuildContext context) {
     return Positioned(
       right: 16,
       bottom: 12,
-      child: AnimatedBuilder(
-        animation: _pulseAnimation,
-        builder: (context, child) {
-          return Transform.scale(
-            scale: _pulseAnimation.value,
-            child: child,
-          );
+      child: GestureDetector(
+        onTapDown: (_) => setState(() => _isPressed = true),
+        onTapUp: (_) {
+          setState(() => _isPressed = false);
+          AIAssistantPanel.show(context);
         },
-        child: GestureDetector(
-          onTap: () => AIAssistantPanel.show(context),
+        onTapCancel: () => setState(() => _isPressed = false),
+        child: AnimatedScale(
+          scale: _isPressed ? 0.94 : 1.0,
+          duration: const Duration(milliseconds: 120),
           child: Container(
             width: 54,
             height: 54,
