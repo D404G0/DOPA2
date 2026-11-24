@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../widgets/bottom_nav_bar.dart';
+import '../widgets/ai_floating_button.dart';
+import '../services/ai_context_service.dart';
 import 'home_dashboard_screen.dart';
 import 'tasks_screen.dart';
 import 'dopamine_stats_screen.dart';
@@ -37,8 +39,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     }
   }
 
+  /// Nombres de las secciones para el contexto de la IA.
+  static const _sectionNames = ['Inicio', 'Tareas', 'Dopamina', 'Pausa'];
+
   void _onTabTapped(int index) {
     MainNavigationScreen.tabNotifier.value = index;
+    // Actualizar la sección actual para el contexto de la IA
+    if (index >= 0 && index < _sectionNames.length) {
+      AIContextService.instance.setCurrentSection(_sectionNames[index]);
+    }
   }
 
   @override
@@ -67,9 +76,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     ];
 
     return Scaffold(
-      body: IndexedStack(
-        index: currentIndex,
-        children: screens,
+      body: Stack(
+        children: [
+          IndexedStack(
+            index: currentIndex,
+            children: screens,
+          ),
+          // Botón flotante del asistente de IA
+          const AIFloatingButton(),
+        ],
       ),
       bottomNavigationBar: DopaBottomNavBar(
         currentIndex: currentIndex,
