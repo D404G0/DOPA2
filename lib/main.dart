@@ -2,13 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'theme/app_theme.dart';
 import 'screens/main_navigation_screen.dart';
+import 'screens/onboarding_screen.dart';
 import 'services/api_service.dart';
+import 'services/db_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Restaurar URL del servidor Docker y sesión JWT guardados en el dispositivo
+  // Restaurar URL del servidor Docker, sesión JWT y estado local limpio del usuario
   await ApiService.instance.initFromStorage();
+  await DBService.instance.initLocalState();
 
   // Configuración de barra de estado translúcida acorde al estilo pastel
   SystemChrome.setSystemUIOverlayStyle(
@@ -86,7 +89,15 @@ class DopaApp extends StatelessWidget {
           },
         );
       },
-      home: const MainNavigationScreen(),
+      home: ValueListenableBuilder<bool>(
+        valueListenable: DBService.instance.profileReadyNotifier,
+        builder: (context, ready, _) {
+          if (ready || DBService.instance.hasConfiguredProfile) {
+            return const MainNavigationScreen();
+          }
+          return const OnboardingScreen();
+        },
+      ),
     );
   }
 }

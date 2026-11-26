@@ -1,4 +1,4 @@
-/// Modelo que representa la entidad 'Usuario' para la base de datos local y el backend FastAPI.
+/// Modelo que representa la entidad 'Usuario' para el estado local y el backend FastAPI.
 class Usuario {
   final int? id;
   final String nombre;
@@ -12,13 +12,35 @@ class Usuario {
   Usuario({
     this.id,
     required this.nombre,
-    this.correo = 'fred@dopa.app',
-    this.dopaminaActual = 32,
+    this.correo = '',
+    this.dopaminaActual = 0,
     this.dopaminaMeta = 50,
     this.nivel = 1,
-    this.rachaDias = 4,
-    this.energiaNivel = 0.45,
+    this.rachaDias = 0,
+    this.energiaNivel = 0.5,
   });
+
+  Usuario copyWith({
+    int? id,
+    String? nombre,
+    String? correo,
+    int? dopaminaActual,
+    int? dopaminaMeta,
+    int? nivel,
+    int? rachaDias,
+    double? energiaNivel,
+  }) {
+    return Usuario(
+      id: id ?? this.id,
+      nombre: nombre ?? this.nombre,
+      correo: correo ?? this.correo,
+      dopaminaActual: dopaminaActual ?? this.dopaminaActual,
+      dopaminaMeta: dopaminaMeta ?? this.dopaminaMeta,
+      nivel: nivel ?? this.nivel,
+      rachaDias: rachaDias ?? this.rachaDias,
+      energiaNivel: energiaNivel ?? this.energiaNivel,
+    );
+  }
 
   Map<String, dynamic> toMap() {
     return {
@@ -36,13 +58,13 @@ class Usuario {
   factory Usuario.fromMap(Map<String, dynamic> map) {
     return Usuario(
       id: map['id'] as int?,
-      nombre: map['nombre'] as String? ?? 'Fred',
-      correo: map['correo'] as String? ?? 'fred@dopa.app',
-      dopaminaActual: (map['dopamina_actual'] ?? map['puntos']) as int? ?? 32,
+      nombre: map['nombre'] as String? ?? '',
+      correo: map['correo'] as String? ?? '',
+      dopaminaActual: (map['dopamina_actual'] ?? map['puntos']) as int? ?? 0,
       dopaminaMeta: (map['dopamina_meta'] ?? map['meta_diaria_puntos']) as int? ?? 50,
       nivel: map['nivel'] as int? ?? 1,
-      rachaDias: map['racha_dias'] as int? ?? 4,
-      energiaNivel: (map['energia_nivel'] as num?)?.toDouble() ?? 0.45,
+      rachaDias: map['racha_dias'] as int? ?? 0,
+      energiaNivel: (map['energia_nivel'] as num?)?.toDouble() ?? 0.5,
     );
   }
 
@@ -53,21 +75,21 @@ class Usuario {
         (prefs?['meta_diaria_dopamina'] as int?) ??
         50;
     final int puntos =
-        (json['puntos_dopamina'] ?? json['puntos']) as int? ?? 32;
+        (json['puntos_dopamina'] ?? json['puntos']) as int? ?? 0;
 
     final String estadoEnergia =
         (json['estado_energia_hoy'] as String? ?? 'media').toLowerCase();
     double energia;
     if (estadoEnergia == 'poquita' || estadoEnergia == 'baja') {
-      energia = 0.25;
+      energia = 0.2;
     } else if (estadoEnergia == 'a tope' || estadoEnergia == 'alta') {
       energia = 0.85;
     } else {
-      energia = 0.45;
+      energia = 0.5;
     }
 
-    String nombre = json['nombre'] as String? ?? 'Fred';
-    if (json['saludo'] is String) {
+    String nombre = json['nombre'] as String? ?? '';
+    if (nombre.isEmpty && json['saludo'] is String) {
       final saludo = json['saludo'] as String;
       final limpio = saludo.replaceAll('¡Hola,', '').replaceAll('!', '').trim();
       if (limpio.isNotEmpty) {
@@ -76,13 +98,13 @@ class Usuario {
     }
 
     return Usuario(
-      id: (json['id'] ?? json['panel_id']) as int? ?? 1,
+      id: (json['id'] ?? json['panel_id']) as int?,
       nombre: nombre,
-      correo: json['correo'] as String? ?? 'fred@dopa.app',
+      correo: json['correo'] as String? ?? '',
       dopaminaActual: puntos,
       dopaminaMeta: meta,
       nivel: json['nivel'] as int? ?? 1,
-      rachaDias: json['dias_activos_registrados'] as int? ?? 4,
+      rachaDias: json['dias_activos_registrados'] as int? ?? 0,
       energiaNivel: energia,
     );
   }

@@ -71,6 +71,14 @@ class UsuarioRepository:
             self.db.refresh(usuario)
         return usuario
 
+    def update_name(self, usuario: Usuario, nombre: str) -> Usuario:
+        """Actualiza el nombre visible del usuario en PostgreSQL."""
+        usuario.nombre = nombre.strip()
+        self.db.add(usuario)
+        self.db.commit()
+        self.db.refresh(usuario)
+        return usuario
+
 
 class TareaRepository:
     """Repositorio transaccional con paginación para `Tarea` y sus `Subtarea`."""

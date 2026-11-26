@@ -33,6 +33,20 @@ class UserPreferencesDTO(BaseModel):
     tema_visual: str = Field(default="Lavanda Suave", min_length=2, max_length=60)
 
 
+class UserProfileUpdateRequestDTO(BaseModel):
+    """Actualización del nombre visible del usuario."""
+
+    nombre: str = Field(..., min_length=2, max_length=120)
+
+    @field_validator("nombre")
+    @classmethod
+    def validate_nombre(cls, value: str) -> str:
+        limpio = value.strip()
+        if not limpio:
+            raise ValueError("El nombre no puede estar vacío.")
+        return limpio
+
+
 class RegisterRequestDTO(BaseModel):
     """DTO de entrada para registro de nuevo usuario (HU-01, RF-01)."""
 
@@ -534,6 +548,9 @@ class GamificationSummaryResponseDTO(BaseModel):
     sesiones_enfoque_completadas: int
     recompensas_desbloqueadas_count: int
     dias_activos_registrados: int
+    actividad_semanal: list[bool] = Field(
+        default_factory=lambda: [False, False, False, False, False, False, False]
+    )
     opciones_humor: list[str] = Field(
         default_factory=lambda: ["Abrumado", "Inquieto", "Con foco", "Tranquilo"]
     )

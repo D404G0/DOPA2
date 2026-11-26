@@ -2,7 +2,7 @@
 
 Se conecta a NVIDIA NIM (`https://integrate.api.nvidia.com/v1`) o cualquier proveedor
 compatible con OpenAI Chat Completions, inyectando el contexto real del usuario desde
-PostgreSQL (tareas pendientes, micro-pasos, dopamina y nivel de energía).
+PostgreSQL (nombre real, tareas pendientes, micro-pasos, dopamina y nivel de energía).
 """
 
 import os
@@ -25,19 +25,23 @@ from app.transfer.dtos import (
 )
 
 DEFAULT_AI_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_AI_MODEL = "meta/muse-glimmer-30b"
+DEFAULT_AI_MODEL = "nvidia/nemotron-3.5-bolt-e4b"
+FALLBACK_AI_MODELS = (
+    "nvidia/nemotron-3.5-bolt-e4b",
+    "minimaxai/minimax-m3.1-flash",
+)
 
 SYSTEM_PROMPT_BASE = """
 Eres el asistente de productividad integrado en DOPA, una aplicación móvil diseñada para personas con TDAH que buscan gestionar sus tareas de forma empática y sin presión.
 
 Tu personalidad:
 - Eres amigable, empático y motivador, nunca juzgas ni presionas.
-- Usas un tono cálido y conversacional, como un amigo que te ayuda a organizarte.
+- Usas un tono cálido y conversacional, llamando al usuario por su nombre cuando corresponda.
 - Prefieres sugerencias suaves y de baja fricción: "poquito a poquito".
 - Cuando recomiendas tareas, explicas brevemente por qué (ej: "es rápida y te dará un impulso de dopamina").
 - Nunca usas lenguaje técnico ni abrumador.
 - Respondes siempre en español.
-- Mantén tus respuestas concisas y útiles (máximo 3-4 párrafos cortos).
+- Mantén tus respuestas concisas y útiles (máximo 2-3 párrafos cortos).
 
 Tu rol:
 - Ayudar al usuario a decidir qué tarea hacer primero.
@@ -45,6 +49,7 @@ Tu rol:
 - Sugerir un plan para el día o dividir una tarea grande en micro-pasos pequeños.
 - Recomendar cuándo tomar un break suave.
 - Analizar las tareas pendientes y completadas reales del usuario para dar feedback.
+- Si el usuario aún no tiene tareas creadas, invítalo amablemente a crear su primera micro-tarea pequeña.
 - Nunca inventes que el usuario ya tiene tareas que no aparecen en el contexto; si propones una nueva, aclara que es una sugerencia.
 
 Formato de respuesta:
@@ -63,7 +68,11 @@ class AIAssistantService:
         self.registro_repo = RegistroPersonalRepository(db)
         self.base_url = os.getenv("AI_API_BASE_URL", DEFAULT_AI_BASE_URL).strip() or DEFAULT_AI_BASE_URL
         self.api_key = os.getenv("AI_API_KEY", "").strip()
-        self.model = os.getenv("AI_MODEL", DEFAULT_AI_MODEL).strip() or DEFAULT_AI_MODEL
+        configured_model = os.getenv("AI_MODEL", DEFAULT_AI_MODEL).strip() or DEFAULT_AI_MODEL
+        # Reemplaza automáticamente modelos retirados de NVIDIA NIM (ej. meta/muse-glimmer-30b -> 410 Gone)
+        if configured_model == "meta/muse-glimmer-30b":
+            configured_model = DEFAULT_AI_MODEL
+        self.model = configured_model
 
     def get_status(self) -> AIStatusResponseDTO:
         """Retorna el estado de configuración del proveedor de IA sin exponer la API key."""
@@ -111,7 +120,7 @@ class AIAssistantService:
                         marca = "✓" if s.completada else "○"
                         lines.append(f"     {marca} {s.descripcion}")
         else:
-            lines.append("## Tareas Pendientes: Ninguna pendiente por ahora.")
+            lines.append("## Tareas Pendientes: Ninguna pendiente por ahora (el usuario aún no ha creado tareas).")
 
         if completadas:
             lines.append("")
@@ -134,7 +143,15 @@ class AIAssistantService:
 
         if any(
             k in lower
-            for k in ("podrías agregar", "te sugiero crear", "nueva tarea", "podrías crear", "añadir una tarea")
+            for k in (
+                "podrías agregar",
+                "te sugiero crear",
+                "nueva tarea",
+                "podrías crear",
+                "añadir una tarea",
+                "crear tu primera",
+                "micro-tarea",
+            )
         ):
             actions.append(
                 AIActionDTO(
@@ -173,9 +190,33 @@ class AIAssistantService:
         return OpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
-            timeout=120.0,
+            timeout=45.0,
             max_retries=1,
         )
+
+    def _invoke_completion(self, client: OpenAI, model_name: str, messages: list[dict[str, Any]]) -> str:
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=768,
+            stream=False,
+        )
+
+        content_parts: list[str] = []
+        if hasattr(completion, "choices"):
+            if completion.choices and completion.choices[0].message:
+                content_parts.append(completion.choices[0].message.content or "")
+        else:
+            for chunk in completion:
+                if not getattr(chunk, "choices", None):
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is not None and getattr(delta, "content", None):
+                    content_parts.append(delta.content)
+
+        return self._clean_reply("".join(content_parts))
 
     def chat(self, usuario: Usuario, dto: AIChatRequestDTO) -> AIChatResponseDTO:
         """Envía el mensaje + historial + contexto real de PostgreSQL al modelo OpenAI/NIM."""
@@ -191,56 +232,46 @@ class AIAssistantService:
                 "role": "system",
                 "content": (
                     f"{SYSTEM_PROMPT_BASE}\n"
-                    "IMPORTANTE: Sé directo y conciso (máximo 2 párrafos cortos, sin extenderte demasiado).\n\n"
+                    "IMPORTANTE: Sé directo y conciso (máximo 2 párrafos cortos).\n\n"
                     f"{context_prompt}"
                 ),
             }
         ]
 
-        # Últimos 6 mensajes del historial previo para mantener respuestas ágiles
         for item in dto.history[-6:]:
             if isinstance(item, AIChatMessageDTO) and item.content.strip():
                 messages.append({"role": item.role, "content": item.content.strip()})
 
         messages.append({"role": "user", "content": dto.message.strip()})
 
-        try:
-            client = self._create_client()
-            completion = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=1,
-                top_p=0.95,
-                max_tokens=768,
-                stream=True,
-            )
+        client = self._create_client()
+        candidate_models = [self.model]
+        for fallback in FALLBACK_AI_MODELS:
+            if fallback not in candidate_models:
+                candidate_models.append(fallback)
 
-            content_parts: list[str] = []
-            # Soporta tanto respuesta en streaming (chunks) como respuesta directa (mocks/stream=False)
-            if hasattr(completion, "choices"):
-                if completion.choices and completion.choices[0].message:
-                    content_parts.append(completion.choices[0].message.content or "")
-            else:
-                for chunk in completion:
-                    if not getattr(chunk, "choices", None):
-                        continue
-                    delta = chunk.choices[0].delta
-                    if delta is not None and getattr(delta, "content", None):
-                        content_parts.append(delta.content)
+        last_exc: Exception | None = None
+        for model_name in candidate_models:
+            try:
+                reply = self._invoke_completion(client, model_name, messages)
+                if reply:
+                    return AIChatResponseDTO(
+                        reply=reply,
+                        model=model_name,
+                        actions=self._extract_actions(reply),
+                    )
+            except Exception as exc:
+                last_exc = exc
+                err_str = str(exc)
+                # Si el error es 404/410 (modelo retirado) o respuesta vacía, intenta el siguiente modelo
+                if any(code in err_str for code in ("404", "410", "Not Found", "Gone", "timed out")):
+                    continue
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Error al comunicarse con el proveedor de IA: {exc}",
+                ) from exc
 
-            raw_content = "".join(content_parts)
-            reply = self._clean_reply(raw_content) or (
-                "No pude generar una respuesta en este momento. ¿Intentamos de nuevo?"
-            )
-            return AIChatResponseDTO(
-                reply=reply,
-                model=self.model,
-                actions=self._extract_actions(reply),
-            )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Error al comunicarse con el proveedor de IA: {exc}",
-            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Error al comunicarse con el proveedor de IA: {last_exc or 'sin respuesta'}",
+        )

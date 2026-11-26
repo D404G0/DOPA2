@@ -4,8 +4,8 @@ import '../services/api_service.dart';
 import '../services/db_service.dart';
 import 'dopa_card.dart';
 
-/// Bottom sheet para configurar la conexión al servidor Docker (IP LAN)
-/// y gestionar la cuenta de usuario autenticada en PostgreSQL.
+/// Bottom sheet para personalizar el nombre, configurar la conexión al servidor Docker
+/// (túnel HTTPS o IP LAN) y gestionar la cuenta de usuario autenticada en PostgreSQL.
 class ServerSettingsSheet extends StatefulWidget {
   const ServerSettingsSheet({super.key});
 
@@ -24,13 +24,15 @@ class ServerSettingsSheet extends StatefulWidget {
 
 class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
   late final TextEditingController _urlController;
+  final TextEditingController _profileNameController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
+  bool _isSavingName = false;
   bool _isTestingConnection = false;
   bool _isSubmittingAuth = false;
-  bool _isRegisterMode = false;
+  bool _isRegisterMode = true;
   bool _obscurePassword = true;
   String? _statusMessage;
   bool _statusIsError = false;
@@ -41,19 +43,60 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
     _urlController = TextEditingController(
       text: ApiService.instance.serverRootUrl,
     );
+    final cachedName = DBService.instance.usuarioActualCache.nombre.trim();
+    if (cachedName.isNotEmpty) {
+      _profileNameController.text = cachedName;
+      _nameController.text = cachedName;
+    }
     final currentEmail = ApiService.instance.currentUser?['correo'] as String?;
     if (currentEmail != null && currentEmail.isNotEmpty) {
       _emailController.text = currentEmail;
+    }
+    if (ApiService.instance.isAuthenticated) {
+      _isRegisterMode = false;
     }
   }
 
   @override
   void dispose() {
     _urlController.dispose();
+    _profileNameController.dispose();
     _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  Future<void> _guardarNombre() async {
+    final cleanName = _profileNameController.text.trim();
+    if (cleanName.length < 2) {
+      setState(() {
+        _statusIsError = true;
+        _statusMessage = 'Escribe un nombre de al menos 2 letras.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isSavingName = true;
+      _statusMessage = null;
+    });
+
+    final res = await DBService.instance.setUserName(cleanName);
+    if (!mounted) return;
+    _nameController.text = cleanName;
+    setState(() {
+      _isSavingName = false;
+      if (res.error != null) {
+        _statusIsError = true;
+        _statusMessage = 'Guardado localmente, pero falló en servidor: ${res.error}';
+      } else {
+        _statusIsError = false;
+        _statusMessage = res.synced
+            ? 'Nombre actualizado en PostgreSQL y en este dispositivo.'
+            : 'Nombre guardado en este dispositivo.';
+      }
+    });
   }
 
   Future<void> _probarYGuardarServidor() async {
@@ -61,7 +104,8 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
     if (rawUrl.isEmpty) {
       setState(() {
         _statusIsError = true;
-        _statusMessage = 'Escribe la IP o URL de tu servidor Docker (ej. http://192.168.1.10:8000).';
+        _statusMessage =
+            'Escribe la URL HTTPS de tu túnel Docker (ej. https://xxx.trycloudflare.com) o tu IP Wi-Fi (ej. http://192.168.1.25:8000).';
       });
       return;
     }
@@ -71,29 +115,37 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
       _statusMessage = null;
     });
 
-    await ApiService.instance.saveBaseUrl(rawUrl);
+    final reachable = await ApiService.instance.testAndSaveServer(rawUrl);
+    if (!mounted) return;
 
-    try {
-      final health = await ApiService.instance.checkHealth();
-      // Sincroniza automáticamente una sesión válida si todavía no hay sesión activa
-      await ApiService.instance.ensureAuthenticated();
-      DBService.instance.resetCacheForSessionChange();
-      await DBService.instance.getUsuario();
-      await DBService.instance.obtenerTareas();
-      if (!mounted) return;
-      setState(() {
-        _isTestingConnection = false;
-        _statusIsError = false;
-        _statusMessage =
-            'Conectado correctamente (${health['service'] ?? 'DOPA API'}). Tus cambios se guardan en PostgreSQL.';
-      });
-    } catch (e) {
-      if (!mounted) return;
+    if (!reachable) {
       setState(() {
         _isTestingConnection = false;
         _statusIsError = true;
+        _statusMessage = ApiService.instance.lastHealthError ??
+            'No se pudo conectar a ${ApiService.instance.serverRootUrl}. Verifica que Docker esté encendido y que la URL sea correcta.';
+      });
+      return;
+    }
+
+    // El servidor Docker SÍ respondió correctamente al /health.
+    if (ApiService.instance.isAuthenticated) {
+      final sync = await DBService.instance.syncLocalDataToServer();
+      if (!mounted) return;
+      setState(() {
+        _isTestingConnection = false;
+        _statusIsError = sync.error != null;
+        _statusMessage = sync.error != null
+            ? 'Servidor conectado, pero tu sesión anterior expiró. Inicia sesión abajo para guardar tus datos.'
+            : 'Conectado a Docker (${ApiService.instance.serverRootUrl}). Todo se guarda en PostgreSQL.';
+      });
+    } else {
+      setState(() {
+        _isTestingConnection = false;
+        _statusIsError = false;
+        _isRegisterMode = true;
         _statusMessage =
-            'No se pudo conectar a ${ApiService.instance.serverRootUrl}. Verifica que Docker esté corriendo y ambos dispositivos estén en el mismo Wi-Fi.';
+            'Servidor Docker conectado en ${ApiService.instance.serverRootUrl}. Crea tu cuenta o inicia sesión abajo para guardar en PostgreSQL.';
       });
     }
   }
@@ -101,13 +153,17 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
   Future<void> _submitAuth() async {
     final email = _emailController.text.trim();
     final password = _passwordController.text;
-    final name = _nameController.text.trim();
+    final name = (_nameController.text.trim().isNotEmpty
+            ? _nameController.text.trim()
+            : _profileNameController.text.trim());
 
-    if (email.isEmpty || password.isEmpty || (_isRegisterMode && name.isEmpty)) {
+    if (email.isEmpty ||
+        password.isEmpty ||
+        (_isRegisterMode && name.length < 2)) {
       setState(() {
         _statusIsError = true;
         _statusMessage = _isRegisterMode
-            ? 'Completa tu nombre, correo y contraseña (mín. 8 caracteres).'
+            ? 'Completa tu nombre (mín. 2 letras), correo y contraseña (mín. 8 caracteres).'
             : 'Ingresa tu correo y contraseña para continuar.';
       });
       return;
@@ -119,28 +175,53 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
     });
 
     try {
+      final rawUrl = _urlController.text.trim();
+      if (rawUrl.isNotEmpty && rawUrl != ApiService.instance.serverRootUrl) {
+        final ok = await ApiService.instance.testAndSaveServer(rawUrl);
+        if (!ok) {
+          if (!mounted) return;
+          setState(() {
+            _isSubmittingAuth = false;
+            _statusIsError = true;
+            _statusMessage = ApiService.instance.lastHealthError ??
+                'El servidor Docker no respondió en ${ApiService.instance.serverRootUrl}.';
+          });
+          return;
+        }
+      }
+
       if (_isRegisterMode) {
         await ApiService.instance.register(
           nombre: name,
           correo: email,
           contrasena: password,
         );
+        await DBService.instance.setUserName(name);
       } else {
-        await ApiService.instance.login(
+        final logged = await ApiService.instance.login(
           correo: email,
           contrasena: password,
         );
+        final loggedUser = logged['usuario'] as Map<String, dynamic>?;
+        final loggedName = (loggedUser?['nombre'] as String?)?.trim() ?? '';
+        if (loggedName.isNotEmpty) {
+          _profileNameController.text = loggedName;
+          _nameController.text = loggedName;
+          await DBService.instance.setUserName(loggedName);
+        }
       }
-      DBService.instance.resetCacheForSessionChange();
-      await DBService.instance.getUsuario();
-      await DBService.instance.obtenerTareas();
+
+      final syncResult = await DBService.instance.syncLocalDataToServer();
       if (!mounted) return;
       setState(() {
         _isSubmittingAuth = false;
         _statusIsError = false;
+        final syncedMsg = syncResult.tasksSynced > 0
+            ? ' (${syncResult.tasksSynced} tareas locales sincronizadas).'
+            : '';
         _statusMessage = _isRegisterMode
-            ? '¡Cuenta creada y conectada a PostgreSQL!'
-            : '¡Sesión iniciada correctamente!';
+            ? '¡Cuenta creada y conectada a PostgreSQL!$syncedMsg'
+            : '¡Sesión iniciada correctamente en PostgreSQL!$syncedMsg';
       });
     } on DopaApiException catch (e) {
       if (!mounted) return;
@@ -155,7 +236,7 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
         _isSubmittingAuth = false;
         _statusIsError = true;
         _statusMessage =
-            'Sin respuesta del servidor ${ApiService.instance.serverRootUrl}. Revisa la IP de Docker.';
+            'Sin respuesta del servidor ${ApiService.instance.serverRootUrl}. Revisa tu conexión y que Docker siga activo.';
       });
     }
   }
@@ -167,7 +248,8 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
     setState(() {
       _passwordController.clear();
       _statusIsError = false;
-      _statusMessage = 'Sesión cerrada. Puedes iniciar con otra cuenta o crear una nueva.';
+      _statusMessage =
+          'Sesión cerrada. Puedes iniciar con otra cuenta o crear una nueva.';
     });
   }
 
@@ -175,14 +257,15 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
     final currentUser = ApiService.instance.currentUser;
-    final userName = (currentUser?['nombre'] as String?) ??
-        DBService.instance.usuarioActualCache.nombre;
+    final userName = (currentUser?['nombre'] as String?)?.trim().isNotEmpty == true
+        ? (currentUser!['nombre'] as String).trim()
+        : DBService.instance.usuarioActualCache.nombre;
     final userEmail = (currentUser?['correo'] as String?) ??
         DBService.instance.usuarioActualCache.correo;
 
     return Container(
       constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.9,
+        maxHeight: MediaQuery.of(context).size.height * 0.92,
       ),
       decoration: const BoxDecoration(
         color: AppTheme.background,
@@ -219,7 +302,7 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
                 children: [
                   Expanded(
                     child: Text(
-                      'Conexión Docker y Cuenta',
+                      'Perfil, Docker y Cuenta',
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
                             fontWeight: FontWeight.w800,
                           ),
@@ -233,42 +316,55 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
               ),
               const SizedBox(height: 6),
 
-              // Indicador de estado en vivo
+              // Indicador dual en vivo: Servidor accesible vs Sesión autenticada
               ValueListenableBuilder<bool>(
                 valueListenable: ApiService.instance.connectionStatusNotifier,
-                builder: (context, isOnline, _) {
-                  return DopaCard(
-                    backgroundColor:
-                        isOnline ? AppTheme.pastelMint : AppTheme.pastelPeach,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    borderRadius: AppTheme.radiusMedium,
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 10,
-                          height: 10,
-                          decoration: BoxDecoration(
-                            color: isOnline
-                                ? const Color(0xFF2E9D68)
-                                : const Color(0xFFD96B43),
-                            shape: BoxShape.circle,
-                          ),
+                builder: (context, isServerOnline, _) {
+                  return ValueListenableBuilder<bool>(
+                    valueListenable: ApiService.instance.authStatusNotifier,
+                    builder: (context, isAuthed, _) {
+                      final Color bg = isServerOnline
+                          ? (isAuthed ? AppTheme.pastelMint : AppTheme.pastelYellow)
+                          : AppTheme.pastelPeach;
+                      final Color dot = isServerOnline
+                          ? (isAuthed
+                              ? const Color(0xFF2E9D68)
+                              : const Color(0xFFD99B26))
+                          : const Color(0xFFD96B43);
+                      final String label = isServerOnline
+                          ? (isAuthed
+                              ? 'Docker conectado y cuenta activa · ${ApiService.instance.serverRootUrl}'
+                              : 'Docker conectado · Falta iniciar sesión o crear cuenta para guardar en BD')
+                          : 'Modo local · Sin conexión a Docker (${ApiService.instance.serverRootUrl})';
+                      return DopaCard(
+                        backgroundColor: bg,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        borderRadius: AppTheme.radiusMedium,
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: dot,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                label,
+                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.textPrimary,
+                                      fontSize: 12.5,
+                                    ),
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            isOnline
-                                ? 'Conectado a Docker · ${ApiService.instance.serverRootUrl}'
-                                : 'Sin conexión a Docker (${ApiService.instance.serverRootUrl})',
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                  color: AppTheme.textPrimary,
-                                  fontSize: 13,
-                                ),
-                          ),
-                        ),
-                      ],
-                    ),
+                      );
+                    },
                   );
                 },
               ),
@@ -299,17 +395,66 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
               const SizedBox(height: 16),
 
               // ===============================================================
-              // SECCIÓN 1: URL DEL SERVIDOR DOCKER
+              // SECCIÓN 1: TU NOMBRE PERSONALIZADO
               // ===============================================================
               Text(
-                '1. Servidor Backend (Docker)',
+                '1. Tu nombre en DOPA',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: const Key('settings_profile_name_field'),
+                      controller: _profileNameController,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: _inputDecoration('Tu nombre', Icons.person_outline),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  DopaCard(
+                    backgroundColor: AppTheme.pastelMint,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                    borderRadius: AppTheme.radiusMedium,
+                    onTap: _isSavingName ? null : _guardarNombre,
+                    child: _isSavingName
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppTheme.borderDark,
+                            ),
+                          )
+                        : const Text(
+                            'Guardar',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              color: AppTheme.textPrimary,
+                              fontSize: 13.5,
+                            ),
+                          ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 20),
+
+              // ===============================================================
+              // SECCIÓN 2: URL DEL SERVIDOR DOCKER
+              // ===============================================================
+              Text(
+                '2. Servidor Backend (Docker)',
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w800,
                     ),
               ),
               const SizedBox(height: 4),
               Text(
-                'Ingresa la URL pública HTTPS de tu túnel Docker (para usar con datos/Internet, ej. https://xxx.trycloudflare.com) o tu IP Wi-Fi local (ej. http://192.168.1.25:8000).',
+                'Ingresa la URL HTTPS pública del túnel Docker (ej. https://xxx.trycloudflare.com) para usar con Internet, o tu IP Wi-Fi local (ej. http://192.168.1.25:8000).',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: AppTheme.textSecondary,
                       fontSize: 12,
@@ -320,24 +465,9 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
               TextField(
                 controller: _urlController,
                 keyboardType: TextInputType.url,
-                decoration: InputDecoration(
-                  hintText: 'https://tu-tunel.trycloudflare.com',
-                  filled: true,
-                  fillColor: AppTheme.surfaceWhite,
-                  prefixIcon: const Icon(Icons.dns_outlined, color: AppTheme.borderDark),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: const BorderSide(color: AppTheme.borderDark, width: 1.6),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: const BorderSide(color: AppTheme.borderDark, width: 1.6),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: const BorderSide(color: AppTheme.borderDark, width: 2.2),
-                  ),
+                decoration: _inputDecoration(
+                  'https://tu-tunel.trycloudflare.com',
+                  Icons.dns_outlined,
                 ),
               ),
               const SizedBox(height: 10),
@@ -377,16 +507,16 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
                 ),
               ),
 
-              const SizedBox(height: 22),
+              const SizedBox(height: 20),
 
               // ===============================================================
-              // SECCIÓN 2: CUENTA DE USUARIO EN POSTGRESQL
+              // SECCIÓN 3: CUENTA DE USUARIO EN POSTGRESQL
               // ===============================================================
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    '2. Tu cuenta DOPA',
+                    '3. Cuenta PostgreSQL',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.w800,
                         ),
@@ -427,7 +557,7 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              userName,
+                              userName.isEmpty ? 'Usuario DOPA' : userName,
                               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                                     fontWeight: FontWeight.w800,
                                   ),
@@ -512,8 +642,8 @@ class _ServerSettingsSheetState extends State<ServerSettingsSheet> {
                         )
                       : Text(
                           _isRegisterMode
-                              ? 'Crear cuenta y entrar'
-                              : 'Iniciar sesión',
+                              ? 'Crear cuenta y sincronizar'
+                              : 'Iniciar sesión y sincronizar',
                           style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                 fontWeight: FontWeight.w800,
                                 fontSize: 15,

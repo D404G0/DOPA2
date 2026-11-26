@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_model.dart';
 import '../models/task_model.dart';
 import '../models/focus_session_model.dart';
@@ -6,19 +8,28 @@ import '../models/wellness_record_model.dart';
 import '../models/reward_model.dart';
 import 'api_service.dart';
 
-/// Servicio de Persistencia Híbrida (Sincronización REST FastAPI `/api/v1` + Caché Local Offline-First).
+/// Servicio de Persistencia Híbrida (Sincronización REST FastAPI `/api/v1` + Caché Local con SharedPreferences).
 ///
-/// Agente Responsable: Agent_Frontend & Agent_Backend
-/// Conecta todas las pantallas de Flutter con los endpoints del Backend FastAPI y
-/// mantiene un respaldo en memoria para garantizar respuesta instantánea y
-/// tolerancia a desconexiones móviles.
+/// Inicia completamente vacío (cero tareas precargadas, cero rachas simuladas, sin nombre fijo)
+/// y persiste tanto localmente como en PostgreSQL dentro de Docker en cuanto el usuario inicia sesión.
 class DBService {
   static final DBService instance = DBService._init();
   DBService._init();
 
+  static const String _prefUserNameKey = 'dopa_user_name';
+  static const String _prefLocalTasksKey = 'dopa_local_tasks';
+  static const String _prefLocalPointsKey = 'dopa_local_points';
+  static const String _prefLocalSessionsKey = 'dopa_local_sessions';
+  static const String _prefLocalEnergiaKey = 'dopa_local_energia';
+  static const String _prefLocalWeeklyKey = 'dopa_local_weekly';
+  static const String _prefUnsyncedTaskIdsKey = 'dopa_unsynced_task_ids';
+
   /// Notificador reactivo: se incrementa ante cualquier mutación o cambio de cuenta/servidor
   /// para que todas las pestañas (Inicio, Tareas, Dopamina) se sincronicen automáticamente.
   final ValueNotifier<int> dataVersion = ValueNotifier<int>(0);
+
+  /// Indica si el usuario ya configuró su nombre o cuenta para mostrar la app principal.
+  final ValueNotifier<bool> profileReadyNotifier = ValueNotifier<bool>(false);
 
   bool _isSyncedWithServer = false;
   String? _lastSyncError;
@@ -26,115 +37,230 @@ class DBService {
   bool get isSyncedWithServer => _isSyncedWithServer;
   String? get lastSyncError => _lastSyncError;
 
+  Usuario _usuarioCache = Usuario(
+    nombre: '',
+    correo: '',
+    dopaminaActual: 0,
+    dopaminaMeta: 50,
+    nivel: 1,
+    rachaDias: 0,
+    energiaNivel: 0.5,
+  );
+
+  List<TareaBloque> _tareasCache = [];
+  List<SesionEnfoque> _sesionesCache = [];
+  List<RegistroBienestar> _registrosCache = [];
+  List<bool> _actividadSemanalCache = List<bool>.filled(7, false);
+  int _sesionesCompletadasLocal = 0;
+  final Set<int> _unsyncedLocalTaskIds = <int>{};
+
+  bool get hasConfiguredProfile =>
+      _usuarioCache.nombre.trim().isNotEmpty ||
+      ApiService.instance.isAuthenticated;
+
+  List<bool> get actividadSemanalCache =>
+      List<bool>.from(_actividadSemanalCache);
+
   void notifyDataChanged() {
     dataVersion.value++;
   }
 
-  /// Limpia la caché en memoria al cambiar de cuenta o de servidor Docker.
-  void resetCacheForSessionChange() {
+  /// Carga el estado local persistido desde `SharedPreferences` al arrancar la aplicación.
+  Future<void> initLocalState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedName = prefs.getString(_prefUserNameKey)?.trim() ?? '';
+      final savedPoints = prefs.getInt(_prefLocalPointsKey) ?? 0;
+      final savedSessions = prefs.getInt(_prefLocalSessionsKey) ?? 0;
+      final savedEnergia = prefs.getDouble(_prefLocalEnergiaKey) ?? 0.5;
+
+      final weeklyRaw = prefs.getString(_prefLocalWeeklyKey);
+      if (weeklyRaw != null && weeklyRaw.isNotEmpty) {
+        final decoded = jsonDecode(weeklyRaw);
+        if (decoded is List) {
+          _actividadSemanalCache = List<bool>.generate(
+            7,
+            (i) => i < decoded.length && decoded[i] == true,
+          );
+        }
+      }
+
+      final unsyncedList = prefs.getStringList(_prefUnsyncedTaskIdsKey);
+      _unsyncedLocalTaskIds
+        ..clear()
+        ..addAll(
+          (unsyncedList ?? const [])
+              .map((s) => int.tryParse(s))
+              .whereType<int>(),
+        );
+
+      final tasksRaw = prefs.getString(_prefLocalTasksKey);
+      if (tasksRaw != null && tasksRaw.isNotEmpty) {
+        final decoded = jsonDecode(tasksRaw);
+        if (decoded is List) {
+          _tareasCache = decoded.whereType<Map<String, dynamic>>().map((item) {
+            final rawPasos = item['micro_pasos'] as List<dynamic>? ?? const [];
+            final pasos = rawPasos
+                .whereType<Map<String, dynamic>>()
+                .map(MicroPaso.fromMap)
+                .toList();
+            return TareaBloque.fromMap(item, pasos: pasos);
+          }).toList();
+        }
+      } else {
+        _tareasCache = [];
+      }
+
+      _sesionesCompletadasLocal = savedSessions;
+      final activeDays = _actividadSemanalCache.where((a) => a).length;
+      _usuarioCache = _usuarioCache.copyWith(
+        nombre: savedName,
+        dopaminaActual: savedPoints,
+        rachaDias: activeDays,
+        energiaNivel: savedEnergia,
+      );
+      profileReadyNotifier.value = hasConfiguredProfile;
+    } catch (_) {
+      // Mantiene el estado limpio si SharedPreferences aún no está disponible.
+    }
+  }
+
+  Future<void> _persistLocalState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefUserNameKey, _usuarioCache.nombre);
+      await prefs.setInt(_prefLocalPointsKey, _usuarioCache.dopaminaActual);
+      await prefs.setInt(_prefLocalSessionsKey, _sesionesCompletadasLocal);
+      await prefs.setDouble(_prefLocalEnergiaKey, _usuarioCache.energiaNivel);
+      await prefs.setString(
+        _prefLocalWeeklyKey,
+        jsonEncode(_actividadSemanalCache),
+      );
+      await prefs.setStringList(
+        _prefUnsyncedTaskIdsKey,
+        _unsyncedLocalTaskIds.map((id) => id.toString()).toList(),
+      );
+
+      final serializedTasks = _tareasCache.map((t) {
+        final map = t.toMap();
+        map['micro_pasos'] = t.microPasos.map((m) => m.toMap()).toList();
+        return map;
+      }).toList();
+      await prefs.setString(_prefLocalTasksKey, jsonEncode(serializedTasks));
+    } catch (_) {
+      // Silencioso en entornos sin canal de almacenamiento.
+    }
+  }
+
+  /// Guarda o actualiza el nombre personalizado del usuario (local + PostgreSQL si está autenticado).
+  Future<({bool synced, String? error})> setUserName(String nombre) async {
+    final cleanName = nombre.trim();
+    if (cleanName.isEmpty) {
+      return (synced: false, error: 'Escribe tu nombre para continuar.');
+    }
+
+    _usuarioCache = _usuarioCache.copyWith(nombre: cleanName);
+    profileReadyNotifier.value = hasConfiguredProfile;
+    await _persistLocalState();
+    notifyDataChanged();
+
+    if (!ApiService.instance.isAuthenticated) {
+      return (synced: false, error: null);
+    }
+
+    try {
+      final updated = await _withAuthRetry(
+        () => ApiService.instance.updateProfileName(cleanName),
+      );
+      final serverName = (updated['nombre'] as String?)?.trim() ?? cleanName;
+      _usuarioCache = _usuarioCache.copyWith(
+        id: updated['id'] as int? ?? _usuarioCache.id,
+        nombre: serverName,
+        correo: updated['correo'] as String? ?? _usuarioCache.correo,
+      );
+      _markOnline();
+      await _persistLocalState();
+      notifyDataChanged();
+      return (synced: true, error: null);
+    } catch (e) {
+      _markOffline(e);
+      return (
+        synced: false,
+        error: e is DopaApiException ? e.message : e.toString(),
+      );
+    }
+  }
+
+  /// Limpia la caché en memoria y local al cambiar de cuenta o cerrar sesión.
+  void resetCacheForSessionChange({bool clearUserName = false}) {
     _tareasCache = [];
+    _sesionesCache = [];
+    _registrosCache = [];
+    _actividadSemanalCache = List<bool>.filled(7, false);
+    _sesionesCompletadasLocal = 0;
+    _unsyncedLocalTaskIds.clear();
     _isSyncedWithServer = false;
     _lastSyncError = null;
+    _usuarioCache = Usuario(
+      nombre: clearUserName ? '' : _usuarioCache.nombre,
+      correo: '',
+      dopaminaActual: 0,
+      dopaminaMeta: 50,
+      nivel: 1,
+      rachaDias: 0,
+      energiaNivel: 0.5,
+    );
+    profileReadyNotifier.value = hasConfiguredProfile;
+    _persistLocalState();
     notifyDataChanged();
   }
 
-  Usuario _usuarioCache = Usuario(
-    id: 1,
-    nombre: 'Fred',
-    dopaminaActual: 32,
-    dopaminaMeta: 50,
-    rachaDias: 4,
-    energiaNivel: 0.45,
-  );
+  /// Sube las tareas creadas localmente antes de iniciar sesión al servidor PostgreSQL y luego descarga la verdad del servidor.
+  Future<({int tasksSynced, String? error})> syncLocalDataToServer() async {
+    if (!ApiService.instance.isAuthenticated) {
+      return (tasksSynced: 0, error: 'Inicia sesión primero.');
+    }
 
-  List<TareaBloque> _tareasCache = [
-    TareaBloque(
-      id: 1,
-      titulo: 'Hacer la cama',
-      subtitulo: 'Fácil · 1/2 pasos · 5 min',
-      descripcion: 'Un solo paso pequeño basta para empezar el día con calma.',
-      duracionMinutos: 5,
-      estado: EstadoTarea.ahora,
-      puntosDopamina: 10,
-      estresNivel: 0.15,
-      prioridad: 'Media',
-      microPasos: [
-        MicroPaso(
-          id: 1,
-          tareaId: 1,
-          descripcion: '1. Estirar las sábanas',
-          completado: true,
-        ),
-        MicroPaso(
-          id: 2,
-          tareaId: 1,
-          descripcion: '2. Colocar almohadas',
-          completado: false,
-        ),
-      ],
-    ),
-    TareaBloque(
-      id: 2,
-      titulo: 'Responder a Ana',
-      subtitulo: 'Sin prisa · 1/2 pasos · 8 min',
-      descripcion: 'Enviar confirmación breve sobre la reunión de mañana.',
-      duracionMinutos: 8,
-      estado: EstadoTarea.despues,
-      puntosDopamina: 10,
-      estresNivel: 0.35,
-      prioridad: 'Alta',
-      microPasos: [
-        MicroPaso(
-          id: 3,
-          tareaId: 2,
-          descripcion: '1. Abrir el chat de Ana',
-          completado: true,
-        ),
-        MicroPaso(
-          id: 4,
-          tareaId: 2,
-          descripcion: '2. Escribir respuesta de 2 líneas y enviar',
-          completado: false,
-        ),
-      ],
-    ),
-    TareaBloque(
-      id: 3,
-      titulo: 'Guardar la ropa',
-      subtitulo: 'Suave · 0/2 pasos · 5 min',
-      descripcion: 'Doblar solo las prendas que están sobre la silla.',
-      duracionMinutos: 5,
-      estado: EstadoTarea.despues,
-      puntosDopamina: 10,
-      estresNivel: 0.25,
-      prioridad: 'Media',
-      microPasos: [
-        MicroPaso(
-          id: 5,
-          tareaId: 3,
-          descripcion: '1. Separar camisetas de pantalones',
-          completado: false,
-        ),
-        MicroPaso(
-          id: 6,
-          tareaId: 3,
-          descripcion: '2. Guardar en el primer cajón',
-          completado: false,
-        ),
-      ],
-    ),
-    TareaBloque(
-      id: 4,
-      titulo: 'Preparar la botella',
-      subtitulo: '¡Hecho! · +10 dopamina',
-      descripcion: 'Llenar la botella de agua para el escritorio.',
-      duracionMinutos: 3,
-      estado: EstadoTarea.hecho,
-      puntosDopamina: 10,
-      estresNivel: 0.1,
-      prioridad: 'Baja',
-    ),
-  ];
+    int syncedCount = 0;
+    try {
+      final pendingToPush = _tareasCache
+          .where((t) => t.id != null && _unsyncedLocalTaskIds.contains(t.id))
+          .toList();
+
+      for (final localTask in pendingToPush) {
+        final created = await ApiService.instance.createTask(
+          titulo: localTask.titulo,
+          descripcion: localTask.descripcion,
+          prioridad: localTask.prioridad,
+          fechaVencimiento: localTask.fechaVencimiento,
+          subtareas: localTask.microPasos
+              .map((m) => m.descripcion.trim())
+              .where((s) => s.isNotEmpty)
+              .toList(),
+        );
+        final createdId = created['id'] as int?;
+        if (localTask.estado == EstadoTarea.hecho && createdId != null) {
+          await ApiService.instance.completeTask(createdId);
+        }
+        _unsyncedLocalTaskIds.remove(localTask.id);
+        syncedCount++;
+      }
+
+      await getUsuario();
+      await obtenerTareas();
+      await obtenerResumenGamificacion();
+      await _persistLocalState();
+      _markOnline();
+      notifyDataChanged();
+      return (tasksSynced: syncedCount, error: null);
+    } catch (e) {
+      _markOffline(e);
+      return (
+        tasksSynced: syncedCount,
+        error: e is DopaApiException ? e.message : e.toString(),
+      );
+    }
+  }
 
   void _markOnline() {
     _isSyncedWithServer = true;
@@ -144,27 +270,50 @@ class DBService {
   void _markOffline(Object error) {
     _isSyncedWithServer = false;
     _lastSyncError = error.toString();
+    // Un 401/404/422 significa que el servidor SÍ responde, solo falta sesión o datos válidos.
+    if (error is DopaApiException && error.statusCode < 500) {
+      return;
+    }
     ApiService.instance.connectionStatusNotifier.value = false;
+  }
+
+  void _recordLocalActivityToday({int addPoints = 0, bool addSession = false}) {
+    final weekdayIdx = (DateTime.now().weekday - 1).clamp(0, 6);
+    _actividadSemanalCache[weekdayIdx] = true;
+    if (addSession) {
+      _sesionesCompletadasLocal++;
+    }
+    final nextPoints = _usuarioCache.dopaminaActual + addPoints;
+    final activeDays = _actividadSemanalCache.where((a) => a).length;
+    final nextLevel = (nextPoints ~/ 50) + 1;
+    _usuarioCache = _usuarioCache.copyWith(
+      dopaminaActual: nextPoints,
+      rachaDias: activeDays,
+      nivel: nextLevel,
+    );
   }
 
   /// Ejecuta una operación autenticada y, si el token expiró (401), intenta renovarlo una vez.
   Future<T> _withAuthRetry<T>(Future<T> Function() action) async {
+    if (!ApiService.instance.isAuthenticated &&
+        (ApiService.instance.refreshTokenValue == null ||
+            ApiService.instance.refreshTokenValue!.isEmpty)) {
+      throw DopaApiException(
+        statusCode: 401,
+        message: 'Inicia sesión o crea tu cuenta para guardar en PostgreSQL.',
+      );
+    }
+
     try {
       return await action();
     } on DopaApiException catch (e) {
       if (e.statusCode == 401) {
-        try {
-          if (ApiService.instance.refreshTokenValue != null &&
-              ApiService.instance.refreshTokenValue!.isNotEmpty) {
-            await ApiService.instance.refreshToken();
-          } else {
-            ApiService.instance.clearSession();
-            await ApiService.instance.ensureAuthenticated();
-          }
+        if (ApiService.instance.refreshTokenValue != null &&
+            ApiService.instance.refreshTokenValue!.isNotEmpty) {
+          await ApiService.instance.refreshToken();
           return await action();
-        } catch (_) {
-          rethrow;
         }
+        rethrow;
       }
       rethrow;
     }
@@ -182,8 +331,13 @@ class DBService {
       final dashboardJson = await _withAuthRetry(
         () => ApiService.instance.getDashboard(),
       );
-      _usuarioCache = Usuario.fromBackendJson(dashboardJson);
+      final parsed = Usuario.fromBackendJson(dashboardJson);
+      _usuarioCache = parsed.copyWith(
+        rachaDias: _usuarioCache.rachaDias,
+      );
+      profileReadyNotifier.value = hasConfiguredProfile;
       _markOnline();
+      await _persistLocalState();
       return _usuarioCache;
     } catch (e) {
       _markOffline(e);
@@ -194,6 +348,7 @@ class DBService {
   /// Actualiza métricas o preferencias del usuario en `/api/v1/auth/preferences` y `/api/v1/dashboard/energy-checkin`.
   Future<int> updateUsuario(Usuario usuario) async {
     _usuarioCache = usuario;
+    await _persistLocalState();
     try {
       await _withAuthRetry(
         () => ApiService.instance.updatePreferences({
@@ -220,16 +375,8 @@ class DBService {
     String? humor,
   }) async {
     final nivelStr = _mapEnergiaLabel(energiaNivel);
-    _usuarioCache = Usuario(
-      id: _usuarioCache.id,
-      nombre: _usuarioCache.nombre,
-      correo: _usuarioCache.correo,
-      dopaminaActual: _usuarioCache.dopaminaActual,
-      dopaminaMeta: _usuarioCache.dopaminaMeta,
-      nivel: _usuarioCache.nivel,
-      rachaDias: _usuarioCache.rachaDias,
-      energiaNivel: energiaNivel,
-    );
+    _usuarioCache = _usuarioCache.copyWith(energiaNivel: energiaNivel);
+    await _persistLocalState();
     try {
       final res = await _withAuthRetry(
         () => ApiService.instance.energyCheckin(
@@ -249,7 +396,7 @@ class DBService {
       notifyDataChanged();
       return (
         synced: false,
-        sugerencia: 'Guardado localmente. Conéctate a Docker para sincronizar.',
+        sugerencia: 'Guardado localmente. Conéctate al servidor para respaldarlo en PostgreSQL.',
       );
     }
   }
@@ -276,7 +423,7 @@ class DBService {
     return result.tarea.id ?? 101;
   }
 
-  /// Crea una tarea y sus micro-pasos en el backend PostgreSQL devolviendo estado de sincronización.
+  /// Crea una tarea y sus micro-pasos en PostgreSQL (o localmente si aún no inicia sesión).
   Future<({TareaBloque tarea, bool synced})> crearTarea({
     required String titulo,
     String? descripcion,
@@ -304,6 +451,7 @@ class DBService {
       );
       _tareasCache.insert(0, nuevaTarea);
       _markOnline();
+      await _persistLocalState();
       notifyDataChanged();
       return (tarea: nuevaTarea, synced: true);
     } catch (e) {
@@ -339,11 +487,14 @@ class DBService {
         duracionMinutos: duracion,
         estado: EstadoTarea.ahora,
         puntosDopamina: 10,
-        estresNivel: prioridad == 'Baja' ? 0.15 : (prioridad == 'Alta' ? 0.45 : 0.28),
+        estresNivel:
+            prioridad == 'Baja' ? 0.15 : (prioridad == 'Alta' ? 0.45 : 0.28),
         microPasos: localSteps,
         prioridad: prioridad,
       );
       _tareasCache.insert(0, nuevaLocal);
+      _unsyncedLocalTaskIds.add(nextId);
+      await _persistLocalState();
       notifyDataChanged();
       return (tarea: nuevaLocal, synced: false);
     }
@@ -368,9 +519,9 @@ class DBService {
           );
         }
       }
-      // Actualiza siempre la caché con la verdad de PostgreSQL (incluso si está vacía).
       _tareasCache = mapped;
       _markOnline();
+      await _persistLocalState();
       return List<TareaBloque>.from(_tareasCache);
     } catch (e) {
       _markOffline(e);
@@ -388,6 +539,7 @@ class DBService {
         _tareasCache[idx] = detalle;
       }
       _markOnline();
+      await _persistLocalState();
       return detalle;
     } catch (e) {
       _markOffline(e);
@@ -433,6 +585,7 @@ class DBService {
         _tareasCache[index] = updated;
       }
       _markOnline();
+      await _persistLocalState();
       notifyDataChanged();
       return (tarea: updated, synced: true);
     } catch (e) {
@@ -453,6 +606,7 @@ class DBService {
               : (completada ? EstadoTarea.hecho : EstadoTarea.despues),
         );
         _tareasCache[index] = updatedLocal;
+        await _persistLocalState();
         notifyDataChanged();
         return (tarea: updatedLocal, synced: false);
       }
@@ -463,10 +617,12 @@ class DBService {
   /// Actualiza el estado o datos de una tarea en `/api/v1/tasks/{id}` o `/api/v1/tasks/{id}/complete`.
   Future<int> actualizarTarea(TareaBloque tarea) async {
     final index = _tareasCache.indexWhere((t) => t.id == tarea.id);
+    final wasDone = index != -1 && _tareasCache[index].estado == EstadoTarea.hecho;
     if (index != -1) {
       _tareasCache[index] = tarea;
     }
     if (tarea.id == null) {
+      await _persistLocalState();
       notifyDataChanged();
       return 1;
     }
@@ -478,15 +634,9 @@ class DBService {
         );
         final puntosTotales = completed['puntos_totales'] as int?;
         if (puntosTotales != null) {
-          _usuarioCache = Usuario(
-            id: _usuarioCache.id,
-            nombre: _usuarioCache.nombre,
-            correo: _usuarioCache.correo,
+          _usuarioCache = _usuarioCache.copyWith(
             dopaminaActual: puntosTotales,
-            dopaminaMeta: _usuarioCache.dopaminaMeta,
             nivel: completed['nivel_actual'] as int? ?? _usuarioCache.nivel,
-            rachaDias: _usuarioCache.rachaDias,
-            energiaNivel: _usuarioCache.energiaNivel,
           );
         }
         final tareaJson = completed['tarea'];
@@ -510,10 +660,15 @@ class DBService {
         }
       }
       _markOnline();
+      await _persistLocalState();
       notifyDataChanged();
       return 1;
     } catch (e) {
       _markOffline(e);
+      if (tarea.estado == EstadoTarea.hecho && !wasDone) {
+        _recordLocalActivityToday(addPoints: tarea.puntosDopamina);
+      }
+      await _persistLocalState();
       notifyDataChanged();
       return 1;
     }
@@ -537,6 +692,7 @@ class DBService {
         _tareasCache[idx] = _tareasCache[idx].copyWith(microPasos: pasosActualizados);
       }
       _markOnline();
+      await _persistLocalState();
       notifyDataChanged();
       return (paso: nuevoPaso, synced: true);
     } catch (e) {
@@ -553,6 +709,7 @@ class DBService {
           ..add(localPaso);
         _tareasCache[idx] = _tareasCache[idx].copyWith(microPasos: pasosActualizados);
       }
+      await _persistLocalState();
       notifyDataChanged();
       return (paso: localPaso, synced: false);
     }
@@ -582,10 +739,12 @@ class DBService {
         ),
       );
       _markOnline();
+      await _persistLocalState();
       notifyDataChanged();
       return 1;
     } catch (e) {
       _markOffline(e);
+      await _persistLocalState();
       notifyDataChanged();
       return 1;
     }
@@ -609,10 +768,12 @@ class DBService {
         () => ApiService.instance.deleteSubtask(tareaId, microPasoId),
       );
       _markOnline();
+      await _persistLocalState();
       notifyDataChanged();
       return true;
     } catch (e) {
       _markOffline(e);
+      await _persistLocalState();
       notifyDataChanged();
       return false;
     }
@@ -621,13 +782,16 @@ class DBService {
   /// Elimina una tarea por ID en `/api/v1/tasks/{id}`.
   Future<int> eliminarTarea(int id) async {
     _tareasCache.removeWhere((t) => t.id == id);
+    _unsyncedLocalTaskIds.remove(id);
     try {
       await _withAuthRetry(() => ApiService.instance.deleteTask(id));
       _markOnline();
+      await _persistLocalState();
       notifyDataChanged();
       return 1;
     } catch (e) {
       _markOffline(e);
+      await _persistLocalState();
       notifyDataChanged();
       return 1;
     }
@@ -655,24 +819,33 @@ class DBService {
         );
         final nuevosPuntos = action['puntos_totales'] as int?;
         if (nuevosPuntos != null) {
-          _usuarioCache = Usuario(
-            id: _usuarioCache.id,
-            nombre: _usuarioCache.nombre,
-            correo: _usuarioCache.correo,
+          _usuarioCache = _usuarioCache.copyWith(
             dopaminaActual: nuevosPuntos,
-            dopaminaMeta: _usuarioCache.dopaminaMeta,
             nivel: action['nivel_actual'] as int? ?? _usuarioCache.nivel,
-            rachaDias: _usuarioCache.rachaDias,
-            energiaNivel: _usuarioCache.energiaNivel,
           );
         }
       }
       _markOnline();
+      await _persistLocalState();
       notifyDataChanged();
       return sessionId;
     } catch (e) {
       _markOffline(e);
-      return 201;
+      final localId = _sesionesCache.length + 201;
+      _sesionesCache.add(
+        SesionEnfoque(
+          id: localId,
+          tareaId: sesion.tareaId,
+          duracionSegundos: sesion.duracionSegundos,
+          completada: sesion.completada,
+        ),
+      );
+      if (sesion.completada) {
+        _recordLocalActivityToday(addPoints: 5, addSession: true);
+      }
+      await _persistLocalState();
+      notifyDataChanged();
+      return localId;
     }
   }
 
@@ -684,7 +857,7 @@ class DBService {
       );
       final items = response['items'] as List<dynamic>? ?? const [];
       _markOnline();
-      return items.whereType<Map<String, dynamic>>().map((json) {
+      _sesionesCache = items.whereType<Map<String, dynamic>>().map((json) {
         final min = json['duracionconcentracion'] as int? ?? 5;
         final completadas = json['sesionescompletadas'] as int? ?? 0;
         return SesionEnfoque(
@@ -694,16 +867,10 @@ class DBService {
           completada: completadas > 0,
         );
       }).toList();
+      return List<SesionEnfoque>.from(_sesionesCache);
     } catch (e) {
       _markOffline(e);
-      return [
-        SesionEnfoque(
-          id: 1,
-          tareaId: 1,
-          duracionSegundos: 300,
-          completada: true,
-        ),
-      ];
+      return List<SesionEnfoque>.from(_sesionesCache);
     }
   }
 
@@ -726,7 +893,17 @@ class DBService {
       return created['id'] as int? ?? 301;
     } catch (e) {
       _markOffline(e);
-      return 301;
+      final localId = _registrosCache.length + 301;
+      _registrosCache.add(
+        RegistroBienestar(
+          id: localId,
+          humor: registro.humor,
+          nivelEnergia: registro.nivelEnergia,
+          notas: registro.notas,
+        ),
+      );
+      notifyDataChanged();
+      return localId;
     }
   }
 
@@ -740,9 +917,9 @@ class DBService {
       );
       final items = response['items'] as List<dynamic>? ?? const [];
       _markOnline();
-      return items.whereType<Map<String, dynamic>>().map((json) {
+      _registrosCache = items.whereType<Map<String, dynamic>>().map((json) {
         final progreso =
-            (json['progresoporcentaje'] as num?)?.toDouble() ?? 64.0;
+            (json['progresoporcentaje'] as num?)?.toDouble() ?? 50.0;
         return RegistroBienestar(
           id: json['id'] as int?,
           humor: TipoHumor.conFoco,
@@ -750,16 +927,10 @@ class DBService {
           notas: json['nombre'] as String?,
         );
       }).toList();
+      return List<RegistroBienestar>.from(_registrosCache);
     } catch (e) {
       _markOffline(e);
-      return [
-        RegistroBienestar(
-          id: 1,
-          humor: TipoHumor.conFoco,
-          nivelEnergia: 0.64,
-          notas: 'Enfoque tranquilo tras hacer la cama.',
-        ),
-      ];
+      return List<RegistroBienestar>.from(_registrosCache);
     }
   }
 
@@ -795,18 +966,25 @@ class DBService {
       final meta = summary['meta_diaria_puntos'] as int?;
       final nivel = summary['nivel'] as int?;
       final dias = summary['dias_activos_registrados'] as int?;
-      _usuarioCache = Usuario(
-        id: _usuarioCache.id,
-        nombre: _usuarioCache.nombre,
-        correo: _usuarioCache.correo,
+      final rawWeekly = summary['actividad_semanal'];
+      if (rawWeekly is List) {
+        _actividadSemanalCache = List<bool>.generate(
+          7,
+          (i) => i < rawWeekly.length && rawWeekly[i] == true,
+        );
+      }
+      _usuarioCache = _usuarioCache.copyWith(
         dopaminaActual: puntos ?? _usuarioCache.dopaminaActual,
         dopaminaMeta: meta ?? _usuarioCache.dopaminaMeta,
         nivel: nivel ?? _usuarioCache.nivel,
         rachaDias: dias ?? _usuarioCache.rachaDias,
-        energiaNivel: _usuarioCache.energiaNivel,
       );
       _markOnline();
-      return summary;
+      await _persistLocalState();
+      return {
+        ...summary,
+        'actividad_semanal': List<bool>.from(_actividadSemanalCache),
+      };
     } catch (e) {
       _markOffline(e);
       return {
@@ -814,9 +992,10 @@ class DBService {
         'meta_diaria_puntos': _usuarioCache.dopaminaMeta,
         'nivel': _usuarioCache.nivel,
         'dias_activos_registrados': _usuarioCache.rachaDias,
+        'actividad_semanal': List<bool>.from(_actividadSemanalCache),
         'tareas_completadas_total':
             _tareasCache.where((t) => t.estado == EstadoTarea.hecho).length,
-        'sesiones_enfoque_completadas': 1,
+        'sesiones_enfoque_completadas': _sesionesCompletadasLocal,
         'recompensas_recientes': const <dynamic>[],
       };
     }

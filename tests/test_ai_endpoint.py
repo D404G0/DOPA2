@@ -20,13 +20,13 @@ def test_ai_status_and_chat_endpoint(client, registered_user, monkeypatch):
     # 2. Configurar variables de entorno y mockear el cliente OpenAI
     monkeypatch.setenv("AI_API_BASE_URL", "https://integrate.api.nvidia.com/v1")
     monkeypatch.setenv("AI_API_KEY", "nvapi-test-key")
-    monkeypatch.setenv("AI_MODEL", "meta/muse-glimmer-30b")
+    monkeypatch.setenv("AI_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 
     status_resp = client.get("/api/v1/ai/status")
     assert status_resp.status_code == 200
     status_data = status_resp.json()
     assert status_data["configured"] is True
-    assert status_data["model"] == "meta/muse-glimmer-30b"
+    assert status_data["model"] == "nvidia/nemotron-3.5-bolt-e4b"
 
     captured_kwargs = {}
 
@@ -63,7 +63,7 @@ def test_ai_status_and_chat_endpoint(client, registered_user, monkeypatch):
     assert chat_resp.status_code == 200
     data = chat_resp.json()
     assert "Revisar apuntes de redes" in data["reply"]
-    assert data["model"] == "meta/muse-glimmer-30b"
+    assert data["model"] == "nvidia/nemotron-3.5-bolt-e4b"
     assert any(a["type"] == "tomarBreak" for a in data["actions"])
 
     # Verificar que se usó base_url, api_key y se incluyó la tarea real de la BD en el system prompt

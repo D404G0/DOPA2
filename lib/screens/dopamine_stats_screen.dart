@@ -21,12 +21,13 @@ class DopamineStatsScreen extends StatefulWidget {
 class _DopamineStatsScreenState extends State<DopamineStatsScreen> {
   int _selectedFilter = 0; // 0: Día, 1: Semana, 2: Mes
   TipoHumor _currentMood = TipoHumor.conFoco;
-  int _dopaminaHoy = 32;
+  int _dopaminaHoy = 0;
   int _metaHoy = 50;
   int _nivel = 1;
-  int _streakDays = 4;
+  int _streakDays = 0;
   int _tareasCompletadas = 0;
   int _sesionesEnfoque = 0;
+  List<bool> _weeklyActivity = List<bool>.filled(7, false);
   DateTime _selectedDate = DateTime.now();
 
   static const _diasSemana = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
@@ -67,13 +68,20 @@ class _DopamineStatsScreenState extends State<DopamineStatsScreen> {
   Future<void> _cargarDatosGamificacion() async {
     final summary = await DBService.instance.obtenerResumenGamificacion();
     if (!mounted) return;
+    final rawWeekly = summary['actividad_semanal'];
     setState(() {
-      _dopaminaHoy = (summary['puntos_totales'] as int?) ?? _dopaminaHoy;
+      _dopaminaHoy = (summary['puntos_totales'] as int?) ?? 0;
       _metaHoy = ((summary['meta_diaria_puntos'] as int?) ?? 50).clamp(10, 10000);
-      _nivel = (summary['nivel'] as int?) ?? _nivel;
-      _streakDays = (summary['dias_activos_registrados'] as int?) ?? _streakDays;
+      _nivel = (summary['nivel'] as int?) ?? 1;
+      _streakDays = (summary['dias_activos_registrados'] as int?) ?? 0;
       _tareasCompletadas = (summary['tareas_completadas_total'] as int?) ?? 0;
       _sesionesEnfoque = (summary['sesiones_enfoque_completadas'] as int?) ?? 0;
+      if (rawWeekly is List) {
+        _weeklyActivity = List<bool>.generate(
+          7,
+          (i) => i < rawWeekly.length && rawWeekly[i] == true,
+        );
+      }
     });
   }
 
@@ -161,30 +169,48 @@ class _DopamineStatsScreenState extends State<DopamineStatsScreen> {
                     ValueListenableBuilder<bool>(
                       valueListenable: ApiService.instance.connectionStatusNotifier,
                       builder: (context, isOnline, _) {
-                        return GestureDetector(
-                          onTap: () => ServerSettingsSheet.show(context),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Container(
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: isOnline
-                                      ? const Color(0xFF3FB97F)
-                                      : const Color(0xFFE08A4E),
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                'dopa',
-                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                      fontWeight: FontWeight.w800,
+                        return ValueListenableBuilder<bool>(
+                          valueListenable: ApiService.instance.authStatusNotifier,
+                          builder: (context, isAuthed, _) {
+                            final dotColor = isOnline
+                                ? (isAuthed
+                                    ? const Color(0xFF3FB97F)
+                                    : const Color(0xFFE5A93B))
+                                : const Color(0xFFE08A4E);
+                            return GestureDetector(
+                              onTap: () => ServerSettingsSheet.show(context),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: Image.asset(
+                                      'assets/icon/dopa_logo.png',
+                                      width: 22,
+                                      height: 22,
+                                      fit: BoxFit.cover,
                                     ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      color: dotColor,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Text(
+                                    'dopa',
+                                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
+                            );
+                          },
                         );
                       },
                     ),
@@ -388,7 +414,10 @@ class _DopamineStatsScreenState extends State<DopamineStatsScreen> {
                 const SizedBox(height: 24),
 
                 // MOTOR DE GAMIFICACIÓN ("Rachas")
-                StreakChart(streakDays: _streakDays),
+                StreakChart(
+                  streakDays: _streakDays,
+                  weeklyActivity: _weeklyActivity,
+                ),
                 const SizedBox(height: 76),
               ],
             ),

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import '../models/task_model.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
+import '../services/db_service.dart';
 import 'dopa_card.dart';
 
 /// Widget Contenedor del Agente de Inteligencia Artificial (FastAPI Backend).
@@ -25,9 +27,28 @@ class _AIRecommendationCardState extends State<AIRecommendationCard> {
   @override
   void initState() {
     super.initState();
-    // [INYECCIÓN FASTAPI]:
-    // Aquí se solicita el análisis adaptativo del agente a FastAPI
-    _recommendationFuture = ApiService.instance.fetchAIRecommendation();
+    _recommendationFuture = _loadRecommendation();
+  }
+
+  Future<AIRecommendationResponse> _loadRecommendation() async {
+    if (ApiService.instance.isAuthenticated) {
+      return ApiService.instance.fetchAIRecommendation();
+    }
+    final tareas = await DBService.instance.obtenerTareas();
+    final pendientes =
+        tareas.where((t) => t.estado != EstadoTarea.hecho).toList();
+    if (pendientes.isEmpty) {
+      return AIRecommendationResponse(
+        recommendation:
+            'Tu tablero está en blanco. Crea un micro-paso de 3 minutos para empezar sin presión.',
+        tone: 'gentle',
+      );
+    }
+    return AIRecommendationResponse(
+      recommendation:
+          'Empieza por «${pendientes.first.titulo}» un solo bloque a la vez.',
+      tone: 'gentle',
+    );
   }
 
   @override

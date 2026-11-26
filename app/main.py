@@ -4,11 +4,17 @@ Agente Responsable: 3.2. Agente de API y Lógica de Negocio (Backend Core Agent)
 Arquitectura en 5 Capas (Presentación -> Transferencia -> Lógica de Negocio -> Acceso a Datos -> Dominio).
 """
 
-from fastapi import FastAPI, Request, status
+from contextlib import asynccontextmanager
+import os
+
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
+from app.data.database import get_db, init_db_schema
 from app.presentation.routers import (
     ai,
     auth,
@@ -22,6 +28,15 @@ from app.presentation.routers import (
     tasks,
 )
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Inicializa y verifica el esquema de base de datos al arrancar el servidor."""
+    if not os.getenv("PYTEST_CURRENT_TEST"):
+        init_db_schema()
+    yield
+
+
 app = FastAPI(
     title="DOPA API — Gestión y Enfoque para TDAH",
     description=(
@@ -32,6 +47,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -64,16 +80,32 @@ async def validation_exception_handler(_request: Request, exc: RequestValidation
 @app.get(
     "/health",
     tags=["0. Salud del Servicio"],
-    summary="Verificar estado operativo del servidor DOPA (RNF-10)",
+    summary="Verificar estado operativo del servidor DOPA y su conexión a la base de datos (RNF-10)",
 )
-def health_check() -> dict[str, str]:
-    """Endpoint de salud y disponibilidad del servicio."""
-    return {
-        "status": "ok",
-        "service": "DOPA API — Gestión y Enfoque para TDAH",
-        "version": "1.0.0",
-        "architecture": "5-Layer Layered Architecture",
-    }
+def health_check(db: Session = Depends(get_db)) -> JSONResponse:
+    """Endpoint de salud y disponibilidad del servicio + PostgreSQL."""
+    try:
+        db.execute(text("SELECT 1"))
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "ok",
+                "database": "ok",
+                "service": "DOPA API — Gestión y Enfoque para TDAH",
+                "version": "1.0.0",
+                "architecture": "5-Layer Layered Architecture",
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "error",
+                "database": f"error: {exc}",
+                "service": "DOPA API — Gestión y Enfoque para TDAH",
+                "version": "1.0.0",
+            },
+        )
 
 
 # Registro de routers versionados bajo /api/v1

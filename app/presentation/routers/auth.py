@@ -14,6 +14,7 @@ from app.transfer.dtos import (
     RefreshTokenRequestDTO,
     RegisterRequestDTO,
     UserPreferencesDTO,
+    UserProfileUpdateRequestDTO,
     UserResponseDTO,
 )
 
@@ -84,6 +85,20 @@ def get_me(
     db: Session = Depends(get_db),
 ) -> UserResponseDTO:
     return AuthService(db).get_profile(usuario)
+
+
+@router.put(
+    "/profile",
+    response_model=UserResponseDTO,
+    status_code=status.HTTP_200_OK,
+    summary="Actualizar nombre del perfil de usuario en PostgreSQL",
+)
+def update_profile(
+    dto: UserProfileUpdateRequestDTO,
+    usuario: Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserResponseDTO:
+    return AuthService(db).update_profile(usuario, dto)
 
 
 @router.put(

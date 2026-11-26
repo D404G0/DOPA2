@@ -6,23 +6,25 @@ import 'dopa_card.dart';
 /// Representa el gráfico semanal de rachas (L, M, X, J, V, S, D).
 class StreakChart extends StatelessWidget {
   final int streakDays;
+  final List<bool> weeklyActivity;
 
   const StreakChart({
     super.key,
-    this.streakDays = 4,
+    this.streakDays = 0,
+    this.weeklyActivity = const [false, false, false, false, false, false, false],
   });
 
   @override
   Widget build(BuildContext context) {
-    final List<Map<String, dynamic>> days = [
-      {'day': 'L', 'height': 38.0, 'active': true},
-      {'day': 'M', 'height': 50.0, 'active': true},
-      {'day': 'X', 'height': 58.0, 'active': true},
-      {'day': 'J', 'height': 45.0, 'active': true},
-      {'day': 'V', 'height': 60.0, 'active': false},
-      {'day': 'S', 'height': 28.0, 'active': false},
-      {'day': 'D', 'height': 42.0, 'active': false},
-    ];
+    const labels = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+    final List<Map<String, dynamic>> days = List.generate(7, (i) {
+      final isActive = i < weeklyActivity.length && weeklyActivity[i];
+      return {
+        'day': labels[i],
+        'height': isActive ? 54.0 : 22.0,
+        'active': isActive,
+      };
+    });
 
     return DopaCard(
       backgroundColor: AppTheme.surfaceWhite,

@@ -22,7 +22,7 @@ class SoftFocusScreen extends StatefulWidget {
   const SoftFocusScreen({
     super.key,
     this.taskId,
-    this.taskTitle = 'Hacer la cama',
+    this.taskTitle = 'Mi enfoque suave',
     this.microSteps = const [],
     this.durationMinutes = 5,
     this.pointsReward = 10,
@@ -201,7 +201,7 @@ class _SoftFocusScreenState extends State<SoftFocusScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => SessionSuccessScreen(
-          userName: userName.isEmpty ? 'Fred' : userName,
+          userName: userName,
           taskTitle: widget.taskTitle,
           stepsCount: _steps.length,
           dopamineGained: widget.pointsReward,

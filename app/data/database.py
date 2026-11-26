@@ -40,9 +40,27 @@ Base = declarative_base()
 
 
 def get_db() -> Generator[Session, None, None]:
-    """ Proveedor de sesión de base de datos por petición (FastAPI Dependency)."""
+    """Proveedor de sesión de base de datos por petición (FastAPI Dependency)."""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+def init_db_schema(max_retries: int = 5, retry_delay: float = 1.5) -> None:
+    """Garantiza que las tablas del ORM existan en PostgreSQL al arrancar el backend."""
+    import time
+    import app.domain.models  # noqa: F401 - registra todos los modelos en Base.metadata
+
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            Base.metadata.create_all(bind=engine, checkfirst=True)
+            return
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+    if last_exc is not None:
+        raise last_exc

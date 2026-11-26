@@ -83,14 +83,19 @@ class ApiService {
   String? _refreshToken;
   Map<String, dynamic>? _currentUser;
 
-  /// Estado reactivo de conectividad con el backend Docker FastAPI.
+  /// Estado reactivo de conectividad con el backend Docker FastAPI (/health).
   final ValueNotifier<bool> connectionStatusNotifier = ValueNotifier<bool>(false);
 
+  /// Estado reactivo de sesión autenticada en PostgreSQL.
+  final ValueNotifier<bool> authStatusNotifier = ValueNotifier<bool>(false);
+
+  String? _lastHealthError;
+  String? get lastHealthError => _lastHealthError;
   bool get isServerReachable => connectionStatusNotifier.value;
   String? get customBaseUrl => _customBaseUrl;
 
-  /// Timeout equilibrado para redes Wi-Fi LAN móviles hacia Docker.
-  Duration requestTimeout = const Duration(seconds: 8);
+  /// Timeout equilibrado para redes Wi-Fi LAN e Internet (túnel HTTPS) hacia Docker.
+  Duration requestTimeout = const Duration(seconds: 10);
 
   /// Carga la URL del servidor Docker y tokens guardados al iniciar la app móvil.
   Future<void> initFromStorage() async {
@@ -112,6 +117,7 @@ class ApiService {
             _currentUser = decoded;
           }
         }
+        authStatusNotifier.value = true;
       }
     } catch (_) {
       // En entorno de pruebas sin plugin nativo se continúa con defaults.
@@ -154,9 +160,6 @@ class ApiService {
   }
 
   /// Resuelve dinámicamente la URL base según la plataforma móvil, emulador o web.
-  /// - Dispositivo físico en red LAN: configurar en la app o pasar `--dart-define=API_BASE_URL=http://<IP_PC>:8000/api/v1`
-  /// - Emulador Android (AVD): `http://10.0.2.2:8000/api/v1`
-  /// - iOS Simulator / Web / Desktop: `http://localhost:8000/api/v1`
   String get baseUrl {
     if (_customBaseUrl != null && _customBaseUrl!.isNotEmpty) {
       return _customBaseUrl!;
@@ -201,7 +204,6 @@ class ApiService {
       }
     } catch (_) {}
     if (previous != baseUrl) {
-      // Al cambiar de servidor Docker limpiamos tokens antiguos para reautenticar limpio.
       clearSession();
     }
   }
@@ -232,6 +234,7 @@ class ApiService {
     if (usuario != null) {
       _currentUser = usuario;
     }
+    authStatusNotifier.value = isAuthenticated;
   }
 
   /// Limpia la sesión activa en memoria y en almacenamiento persistente.
@@ -239,6 +242,7 @@ class ApiService {
     _accessToken = null;
     _refreshToken = null;
     _currentUser = null;
+    authStatusNotifier.value = false;
     _persistSession().catchError((_) {});
   }
 
@@ -280,8 +284,11 @@ class ApiService {
 
   dynamic _decodeResponse(http.Response response) {
     final isSuccess = response.statusCode >= 200 && response.statusCode < 300;
-    if (isSuccess) {
+    // Si el servidor respondió con un HTTP 2xx o 4xx de negocio, el servidor SÍ está alcanzable
+    if (response.statusCode < 500) {
       connectionStatusNotifier.value = true;
+    }
+    if (isSuccess) {
       if (response.statusCode == 204 || response.bodyBytes.isEmpty) {
         return <String, dynamic>{};
       }
@@ -335,7 +342,7 @@ class ApiService {
   // 0. SALUD DEL SERVICIO (/health)
   // ===========================================================================
 
-  /// Verifica el estado operativo del servidor FastAPI (`GET /health`).
+  /// Verifica el estado operativo del servidor FastAPI y PostgreSQL (`GET /health`).
   Future<Map<String, dynamic>> checkHealth() async {
     final root = serverRootUrl.isEmpty ? 'http://localhost:8000' : serverRootUrl;
     final uri = Uri.parse('$root/health');
@@ -343,10 +350,30 @@ class ApiService {
       final response = await _client
           .get(uri, headers: _buildHeaders(requiresAuth: false))
           .timeout(requestTimeout);
-      return _decodeResponse(response) as Map<String, dynamic>;
+      final data = _decodeResponse(response) as Map<String, dynamic>;
+      connectionStatusNotifier.value = true;
+      _lastHealthError = null;
+      return data;
+    } on DopaApiException catch (e) {
+      connectionStatusNotifier.value = false;
+      _lastHealthError = 'El servidor respondió con error ${e.statusCode}: ${e.message}';
+      rethrow;
     } catch (e) {
       connectionStatusNotifier.value = false;
+      _lastHealthError =
+          'No se pudo contactar a $root. Verifica que la URL esté bien escrita, Docker esté encendido y el túnel o Wi-Fi sigan activos.';
       rethrow;
+    }
+  }
+
+  /// Guarda la URL del servidor y comprueba su conectividad mediante `/health`.
+  Future<bool> testAndSaveServer(String url) async {
+    await saveBaseUrl(url);
+    try {
+      await checkHealth();
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -375,6 +402,7 @@ class ApiService {
     _accessToken = data['access_token'] as String?;
     _refreshToken = data['refresh_token'] as String?;
     _currentUser = data['usuario'] as Map<String, dynamic>?;
+    authStatusNotifier.value = isAuthenticated;
     await _persistSession();
     return data;
   }
@@ -398,6 +426,7 @@ class ApiService {
     _accessToken = data['access_token'] as String?;
     _refreshToken = data['refresh_token'] as String?;
     _currentUser = data['usuario'] as Map<String, dynamic>?;
+    authStatusNotifier.value = isAuthenticated;
     await _persistSession();
     return data;
   }
@@ -422,6 +451,7 @@ class ApiService {
     _accessToken = data['access_token'] as String?;
     _refreshToken = data['refresh_token'] as String?;
     _currentUser = data['usuario'] as Map<String, dynamic>?;
+    authStatusNotifier.value = isAuthenticated;
     await _persistSession();
     return data;
   }
@@ -456,6 +486,22 @@ class ApiService {
     return data;
   }
 
+  /// Actualiza el nombre visible del usuario en PostgreSQL (`PUT /api/v1/auth/profile`).
+  Future<Map<String, dynamic>> updateProfileName(String nombre) async {
+    await ensureAuthenticated();
+    final response = await _client
+        .put(
+          _buildUri('/auth/profile'),
+          headers: _buildHeaders(),
+          body: jsonEncode({'nombre': nombre.trim()}),
+        )
+        .timeout(requestTimeout);
+    final data = _decodeResponse(response) as Map<String, dynamic>;
+    _currentUser = data;
+    await _persistSession();
+    return data;
+  }
+
   /// Actualiza las preferencias del usuario (`PUT /api/v1/auth/preferences`).
   Future<Map<String, dynamic>> updatePreferences(
     Map<String, dynamic> preferences,
@@ -474,37 +520,22 @@ class ApiService {
     return data;
   }
 
-  /// Garantiza que el cliente móvil tenga una sesión activa (auto-login / auto-registro de Fred).
-  Future<bool> ensureAuthenticated({
-    String defaultEmail = 'fred@dopa.app',
-    String defaultPassword = 'Dopa1234!',
-    String defaultName = 'Fred',
-  }) async {
+  /// Verifica si el usuario tiene sesión JWT activa (o intenta renovar con refresh_token).
+  /// Nunca crea ni inicia sesión silenciosamente en cuentas de demostración.
+  Future<bool> ensureAuthenticated() async {
     if (isAuthenticated) return true;
-    try {
-      await login(correo: defaultEmail, contrasena: defaultPassword);
-      return true;
-    } on DopaApiException catch (e) {
-      if (e.statusCode == 401) {
-        // Intentar con contraseña alternativa de seed o registrar si aún no existe
-        try {
-          await login(correo: defaultEmail, contrasena: 'secret');
-          return true;
-        } catch (_) {}
-        try {
-          await register(
-            nombre: defaultName,
-            correo: defaultEmail,
-            contrasena: defaultPassword,
-          );
-          return true;
-        } catch (_) {}
+    if (_refreshToken != null && _refreshToken!.isNotEmpty) {
+      try {
+        await refreshToken();
+        return isAuthenticated;
+      } catch (_) {
+        clearSession();
       }
-      return false;
-    } catch (_) {
-      connectionStatusNotifier.value = false;
-      return false;
     }
+    throw DopaApiException(
+      statusCode: 401,
+      message: 'Inicia sesión o crea tu cuenta en "• dopa" para sincronizar con PostgreSQL.',
+    );
   }
 
   // ===========================================================================

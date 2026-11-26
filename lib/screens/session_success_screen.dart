@@ -19,11 +19,11 @@ class SessionSuccessScreen extends StatelessWidget {
 
   const SessionSuccessScreen({
     super.key,
-    this.userName = 'Fred',
-    this.taskTitle = 'Hacer la cama',
+    this.userName = '',
+    this.taskTitle = 'Tu micro-tarea',
     this.stepsCount,
     this.dopamineGained = 10,
-    this.totalDopamineToday = 32,
+    this.totalDopamineToday = 0,
     this.onGoToDopamine,
     this.onGoHome,
   });
@@ -124,7 +124,9 @@ class SessionSuccessScreen extends StatelessWidget {
                         children: [
                           Flexible(
                             child: Text(
-                              '¡Lo hiciste, $userName!',
+                              userName.trim().isEmpty
+                                  ? '¡Lo hiciste!'
+                                  : '¡Lo hiciste, ${userName.trim()}!',
                               overflow: TextOverflow.ellipsis,
                               style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                                     fontWeight: FontWeight.w900,

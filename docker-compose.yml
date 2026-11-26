@@ -24,7 +24,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dopa_pass}
       POSTGRES_DB: ${POSTGRES_DB:-dopa_db}
     ports:
-      - "0.0.0.0:${POSTGRES_PORT:-5432}:5432"
+      - "0.0.0.0:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -75,7 +75,7 @@ services:
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
       AI_API_BASE_URL: ${AI_API_BASE_URL:-https://integrate.api.nvidia.com/v1}
       AI_API_KEY: ${AI_API_KEY:-}
-      AI_MODEL: ${AI_MODEL:-meta/muse-glimmer-30b}
+      AI_MODEL: ${AI_MODEL:-nvidia/nemotron-3.5-bolt-e4b}
     ports:
       - "0.0.0.0:${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -103,7 +103,7 @@ services:
         API_BASE_URL: ${API_BASE_URL:-/api/v1}
         AI_API_BASE_URL: ${AI_API_BASE_URL:-https://integrate.api.nvidia.com/v1}
         AI_API_KEY: ${AI_API_KEY:-}
-        AI_MODEL: ${AI_MODEL:-meta/muse-glimmer-30b}
+        AI_MODEL: ${AI_MODEL:-nvidia/nemotron-3.5-bolt-e4b}
     container_name: dopa_flutter_frontend
     restart: unless-stopped
     ports:

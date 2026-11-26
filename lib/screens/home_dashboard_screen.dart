@@ -28,21 +28,26 @@ class HomeDashboardScreen extends StatefulWidget {
 }
 
 class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
-  String _saludo = '¡Hola, Fred!';
+  String _saludo = '¡Hola!';
   String _subtitulo = 'Vamos un paso a la vez';
-  double _energyLevel = 0.45;
-  int _pendientesCount = 2;
+  double _energyLevel = 0.5;
+  int _pendientesCount = 0;
   TareaBloque? _quickTask;
-  String _quickTaskTitle = 'Poner un vaso de agua cerca';
-  int? _quickTaskId = 2;
+  String _quickTaskTitle = '';
+  int? _quickTaskId;
   int _quickTaskDuration = 5;
-  double _quickTaskStress = 0.35;
+  double _quickTaskStress = 0.25;
   List<MicroPaso> _quickTaskSteps = const [];
-  bool _hasNoPendingTasks = false;
+  bool _hasNoPendingTasks = true;
 
   @override
   void initState() {
     super.initState();
+    final initialName = DBService.instance.usuarioActualCache.nombre.trim();
+    if (initialName.isNotEmpty) {
+      _saludo = '¡Hola, ${initialName.split(' ').first}!';
+    }
+    _energyLevel = DBService.instance.usuarioActualCache.energiaNivel;
     DBService.instance.dataVersion.addListener(_onDataChanged);
     _sincronizarDashboard();
   }
@@ -60,63 +65,93 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
   }
 
   Future<void> _sincronizarDashboard() async {
-    try {
-      final dashboard = await ApiService.instance.getDashboard();
-      if (!mounted) return;
-      final estadoEnergia =
-          (dashboard['estado_energia_hoy'] as String? ?? 'media').toLowerCase();
-      double parsedEnergy = 0.5;
-      if (estadoEnergia == 'poquita' || estadoEnergia == 'baja') {
-        parsedEnergy = 0.2;
-      } else if (estadoEnergia == 'a tope' || estadoEnergia == 'alta') {
-        parsedEnergy = 0.85;
-      }
-
-      setState(() {
-        if (dashboard['saludo'] is String) {
-          _saludo = dashboard['saludo'] as String;
-        }
-        if (dashboard['subtitulo_amigable'] is String) {
-          _subtitulo = dashboard['subtitulo_amigable'] as String;
-        }
-        _energyLevel = parsedEnergy;
-
-        final resumen = dashboard['resumen_tareas'] as Map<String, dynamic>?;
-        if (resumen != null && resumen['pendientes'] is int) {
-          _pendientesCount = resumen['pendientes'] as int;
+    if (ApiService.instance.isAuthenticated) {
+      try {
+        final dashboard = await ApiService.instance.getDashboard();
+        if (!mounted) return;
+        final estadoEnergia =
+            (dashboard['estado_energia_hoy'] as String? ?? 'media').toLowerCase();
+        double parsedEnergy = 0.5;
+        if (estadoEnergia == 'poquita' || estadoEnergia == 'baja') {
+          parsedEnergy = 0.2;
+        } else if (estadoEnergia == 'a tope' || estadoEnergia == 'alta') {
+          parsedEnergy = 0.85;
         }
 
-        final microTareas = dashboard['micro_tareas_hoy'] as List<dynamic>?;
-        if (microTareas != null && microTareas.isNotEmpty) {
-          final first = microTareas.first;
-          if (first is Map<String, dynamic>) {
-            final mapped =
-                TareaBloque.fromBackendJson(first, isFirstPending: true);
-            _quickTask = mapped;
-            _quickTaskTitle = mapped.titulo;
-            _quickTaskId = mapped.id;
-            _quickTaskDuration = mapped.duracionMinutos;
-            _quickTaskStress = mapped.estresNivel;
-            _quickTaskSteps = mapped.microPasos;
-            _hasNoPendingTasks = false;
+        setState(() {
+          if (dashboard['saludo'] is String &&
+              (dashboard['saludo'] as String).trim().isNotEmpty) {
+            _saludo = dashboard['saludo'] as String;
           }
-        } else {
-          _quickTask = null;
-          _quickTaskId = null;
-          _quickTaskSteps = const [];
-          _hasNoPendingTasks = true;
-        }
-      });
-    } catch (_) {
-      final usuario = await DBService.instance.getUsuario();
-      if (!mounted) return;
-      setState(() {
-        _energyLevel = usuario.energiaNivel;
-        if (usuario.nombre.isNotEmpty) {
-          _saludo = '¡Hola, ${usuario.nombre.split(' ').first}!';
-        }
-      });
+          if (dashboard['subtitulo_amigable'] is String) {
+            _subtitulo = dashboard['subtitulo_amigable'] as String;
+          }
+          _energyLevel = parsedEnergy;
+
+          final resumen = dashboard['resumen_tareas'] as Map<String, dynamic>?;
+          if (resumen != null && resumen['pendientes'] is int) {
+            _pendientesCount = resumen['pendientes'] as int;
+          } else {
+            _pendientesCount = 0;
+          }
+
+          final microTareas = dashboard['micro_tareas_hoy'] as List<dynamic>?;
+          if (microTareas != null && microTareas.isNotEmpty) {
+            final first = microTareas.first;
+            if (first is Map<String, dynamic>) {
+              final mapped =
+                  TareaBloque.fromBackendJson(first, isFirstPending: true);
+              _quickTask = mapped;
+              _quickTaskTitle = mapped.titulo;
+              _quickTaskId = mapped.id;
+              _quickTaskDuration = mapped.duracionMinutos;
+              _quickTaskStress = mapped.estresNivel;
+              _quickTaskSteps = mapped.microPasos;
+              _hasNoPendingTasks = false;
+            }
+          } else {
+            _quickTask = null;
+            _quickTaskId = null;
+            _quickTaskTitle = '';
+            _quickTaskSteps = const [];
+            _hasNoPendingTasks = true;
+          }
+        });
+        return;
+      } catch (_) {
+        // Cae al respaldo local actualizado.
+      }
     }
+
+    final usuario = DBService.instance.usuarioActualCache;
+    final tareas = await DBService.instance.obtenerTareas();
+    final pendientes =
+        tareas.where((t) => t.estado != EstadoTarea.hecho).toList();
+    if (!mounted) return;
+    setState(() {
+      _energyLevel = usuario.energiaNivel;
+      final cleanName = usuario.nombre.trim();
+      _saludo = cleanName.isNotEmpty
+          ? '¡Hola, ${cleanName.split(' ').first}!'
+          : '¡Hola!';
+      _pendientesCount = pendientes.length;
+      if (pendientes.isNotEmpty) {
+        final first = pendientes.first;
+        _quickTask = first;
+        _quickTaskTitle = first.titulo;
+        _quickTaskId = first.id;
+        _quickTaskDuration = first.duracionMinutos;
+        _quickTaskStress = first.estresNivel;
+        _quickTaskSteps = first.microPasos;
+        _hasNoPendingTasks = false;
+      } else {
+        _quickTask = null;
+        _quickTaskTitle = '';
+        _quickTaskId = null;
+        _quickTaskSteps = const [];
+        _hasNoPendingTasks = true;
+      }
+    });
   }
 
   Future<void> _onEnergyChanged(double newLevel) async {
@@ -206,54 +241,72 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                         ],
                       ),
                     ),
-                    // Pill interactivo "• dopa" con estado de conexión a Docker
+                    // Pill interactivo con logo dopa y estado dual (servidor / cuenta)
                     ValueListenableBuilder<bool>(
                       valueListenable: ApiService.instance.connectionStatusNotifier,
                       builder: (context, isOnline, _) {
-                        return GestureDetector(
-                          key: const Key('server_settings_button'),
-                          onTap: () => ServerSettingsSheet.show(context),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: AppTheme.surfaceWhite,
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(
-                                color: AppTheme.borderDark,
-                                width: 1.5,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    color: isOnline
-                                        ? const Color(0xFF3FB97F)
-                                        : const Color(0xFFE08A4E),
-                                    shape: BoxShape.circle,
+                        return ValueListenableBuilder<bool>(
+                          valueListenable: ApiService.instance.authStatusNotifier,
+                          builder: (context, isAuthed, _) {
+                            final dotColor = isOnline
+                                ? (isAuthed
+                                    ? const Color(0xFF3FB97F)
+                                    : const Color(0xFFE5A93B))
+                                : const Color(0xFFE08A4E);
+                            return GestureDetector(
+                              key: const Key('server_settings_button'),
+                              onTap: () => ServerSettingsSheet.show(context),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.surfaceWhite,
+                                  borderRadius: BorderRadius.circular(18),
+                                  border: Border.all(
+                                    color: AppTheme.borderDark,
+                                    width: 1.5,
                                   ),
                                 ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'dopa',
-                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                        fontWeight: FontWeight.w800,
-                                        color: AppTheme.textPrimary,
-                                        fontSize: 14,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(6),
+                                      child: Image.asset(
+                                        'assets/icon/dopa_logo.png',
+                                        width: 20,
+                                        height: 20,
+                                        fit: BoxFit.cover,
                                       ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      width: 8,
+                                      height: 8,
+                                      decoration: BoxDecoration(
+                                        color: dotColor,
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 5),
+                                    Text(
+                                      'dopa',
+                                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                            fontWeight: FontWeight.w800,
+                                            color: AppTheme.textPrimary,
+                                            fontSize: 14,
+                                          ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    const Icon(
+                                      Icons.tune_rounded,
+                                      size: 16,
+                                      color: AppTheme.borderDark,
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(width: 4),
-                                const Icon(
-                                  Icons.tune_rounded,
-                                  size: 16,
-                                  color: AppTheme.borderDark,
-                                ),
-                              ],
-                            ),
-                          ),
+                              ),
+                            );
+                          },
                         );
                       },
                     ),

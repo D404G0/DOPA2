@@ -8,6 +8,7 @@ Incluye:
 - Cálculo automático de porcentaje de progreso en registros personales y metas financieras (`RF-21`).
 """
 
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
@@ -97,6 +98,7 @@ from app.transfer.dtos import (
     TaskResponseDTO,
     TaskUpdateRequestDTO,
     UserPreferencesDTO,
+    UserProfileUpdateRequestDTO,
     UserResponseDTO,
 )
 from app.transfer.mappers import (
@@ -228,6 +230,11 @@ class AuthService(IAuthService):
     def update_preferences(self, usuario: Usuario, dto: UserPreferencesDTO) -> UserResponseDTO:
         prefs = set_user_preferences(usuario.id, dto)
         return UsuarioMapper.to_dto(usuario, prefs)
+
+    def update_profile(self, usuario: Usuario, dto: UserProfileUpdateRequestDTO) -> UserResponseDTO:
+        actualizado = self.user_repo.update_name(usuario, dto.nombre)
+        prefs = get_user_preferences(actualizado.id)
+        return UsuarioMapper.to_dto(actualizado, prefs)
 
 
 # =====================================================================
@@ -1054,7 +1061,24 @@ class GamificationService(IGamificationService):
 
         recompensas, _ = self.recompensa_repo.list_for_user(usuario.id, limit=50, offset=0)
         desbloqueadas = [r for r in recompensas if r.desbloqueada]
-        paneles = self.panel_repo.list_by_user(usuario.id, limit=365, offset=0)
+
+        has_real_activity = puntos > 0 or completadas_total > 0 or total_ciclos_pomodoro > 0
+        actividad_semanal = [False, False, False, False, False, False, False]
+        dias_activos = 0
+        if has_real_activity:
+            paneles = self.panel_repo.list_by_user(usuario.id, limit=365, offset=0)
+            active_dates = {p.fechaactual for p in paneles if p.fechaactual is not None}
+            if not active_dates:
+                today = date.today()
+                self.panel_repo.register_or_get_today(usuario.id)
+                active_dates.add(today)
+            dias_activos = len(active_dates)
+            today = date.today()
+            week_start = today - timedelta(days=today.weekday())
+            for i in range(7):
+                day_i = week_start + timedelta(days=i)
+                if day_i in active_dates:
+                    actividad_semanal[i] = True
 
         return GamificationSummaryResponseDTO(
             encabezado="Mi Dopamina hoy",
@@ -1067,7 +1091,8 @@ class GamificationService(IGamificationService):
             tareas_completadas_total=completadas_total,
             sesiones_enfoque_completadas=total_ciclos_pomodoro,
             recompensas_desbloqueadas_count=len(desbloqueadas),
-            dias_activos_registrados=max(1, len(paneles)),
+            dias_activos_registrados=dias_activos,
+            actividad_semanal=actividad_semanal,
             recompensas_recientes=[RecompensaMapper.to_dto(r) for r in recompensas[:6]],
         )
 

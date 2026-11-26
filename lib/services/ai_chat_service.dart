@@ -30,7 +30,7 @@ class AIChatService {
 
   static const String _envModel = String.fromEnvironment(
     'AI_MODEL',
-    defaultValue: 'meta/muse-glimmer-30b',
+    defaultValue: 'nvidia/nemotron-3.5-bolt-e4b',
   );
 
   String? _customBaseUrl;
@@ -84,6 +84,15 @@ Responde en español, con tono cálido y conciso (máximo 3-4 párrafos cortos),
     );
     _conversationHistory.add(userMsg);
 
+    if (!ApiService.instance.isAuthenticated && _apiKey.isEmpty) {
+      final msg = ApiService.instance.isServerReachable
+          ? 'Tu servidor Docker está conectado, pero falta iniciar sesión o crear tu cuenta en el botón «• dopa» arriba a la derecha para usar el asistente de IA con tus datos.'
+          : 'Conéctate a tu servidor Docker e inicia sesión desde el botón «• dopa» arriba a la derecha para activar el asistente de IA. 🌿';
+      final errorMsg = ChatMessage.error(msg);
+      _conversationHistory.add(errorMsg);
+      return errorMsg;
+    }
+
     // 1. Ruta principal: Backend Docker FastAPI (`/api/v1/ai/chat` usando `from openai import OpenAI`)
     try {
       final backendResult = await ApiService.instance.chatWithAI(
@@ -107,13 +116,17 @@ Responde en español, con tono cálido y conciso (máximo 3-4 párrafos cortos),
       _conversationHistory.add(assistantMsg);
       return assistantMsg;
     } on DopaApiException catch (e) {
-      // Si el servidor respondió con un error explícito (ej. 503 sin AI_API_KEY), mostrar detalle claro
+      // Si el servidor respondió con un error explícito (ej. 503 sin AI_API_KEY o 401), mostrar detalle claro
       if (_apiKey.isEmpty) {
-        final errorMsg = ChatMessage.error(
-          e.statusCode == 503
-              ? 'El servidor Docker aún no tiene configurada la variable AI_API_KEY en el archivo .env.'
-              : 'El asistente devolvió un error (${e.statusCode}): ${e.message}',
-        );
+        final String text;
+        if (e.statusCode == 503) {
+          text = 'El servidor Docker aún no tiene configurada la variable AI_API_KEY en el archivo .env.';
+        } else if (e.statusCode == 401) {
+          text = 'Tu sesión venció. Inicia sesión de nuevo en el botón «• dopa» para usar el asistente de IA.';
+        } else {
+          text = 'El asistente devolvió un error (${e.statusCode}): ${e.message}';
+        }
+        final errorMsg = ChatMessage.error(text);
         _conversationHistory.add(errorMsg);
         return errorMsg;
       }
